@@ -130,3 +130,7 @@ dmypy.json
 
 data.zip
 scripts.zip
+experiment_runner.py
+models/
+results/
+.started/

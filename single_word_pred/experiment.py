@@ -1,3 +1,7 @@
+# experiment to predict a word(onehot encoding) from characters
+# copied from single_emb_pred, except predicts onehot instead of word embedding.
+# the dataset can be configured to add words after the word of interest and generate misspellings.
+
 import torch
 import torch.nn as nn
 from math import ceil
@@ -10,7 +14,6 @@ import yaml
 from collections import defaultdict
 from torch.utils.checkpoint import checkpoint_sequential
 import os
-import math
 
 level = logging.getLevelName("INFO")
 logging.basicConfig(
@@ -19,102 +22,56 @@ logging.basicConfig(
   datefmt="%H:%M:%S",
 )
 
-# TODO
-# nearest neighbor acc optimization
-# end of word location helper loss
-# adding droput?
-# try out gelu activation
 
-
-MSE = nn.MSELoss()
-L1 = nn.L1Loss()
-def mse_loss_fn(outputs, labels, embedding_matrix):
-  return MSE(outputs, embedding_matrix[labels])
-
-# not actually fast... can run on colab GPU with lots of mem but doesn't speed up much
-def mse_entropy_fast(outputs, labels, embedding_matrix):
-  mse = torch.nn.MSELoss(reduction='none')
-  emb_mat =embedding_matrix.unsqueeze(1).expand(-1,len(outputs),-1)
-  diffs = mse(emb_mat, outputs)
-
-  logits = diffs.mean(-1).permute(1,0)
-
-  loss = xent_loss(logits, labels)
-  return loss
 
 Torch2Py = lambda x: x.cpu().numpy().tolist()
 
-def nearest_neighbor_acc_fn(outputs, labels, embedding_matrix):
-  # overflows memory
-  # emb_mat =embedding_matrix.unsqueeze(1).expand(-1,len(outputs),-1)
-  # diffs = ((emb_mat - outputs)**2)
-  # mse = diffs.mean(-1).permute(1,0)
+xent = nn.CrossEntropyLoss()
+def xentropy_loss_fn(output, labels):
+  return xent(output.view(-1, output.size(-1)), labels.view(-1))
 
-  # too slow
-  # MSE = torch.nn.MSELoss()
-  # mins = []
-  # for pred in outputs:
-  #   vals = []
-  #   for emb in embedding_matrix:
-  #     vals.append(MSE(emb, pred))
-  #   mse = torch.stack(vals)
-
-  # just right
-  mins = []
-  mse = torch.nn.MSELoss(reduction='none')
-  for pred in outputs:
-    # repeat the pred and compare it to each entry in the embedding matrix
-    tiled_pred = pred.unsqueeze(0).expand(len(embedding_matrix), -1)
-    mins.append(mse(tiled_pred, embedding_matrix).mean(-1).argmin())
-  min_vec = torch.stack(mins)
-  right = (min_vec == labels)
-  acc = right.float().mean()
-
-  return acc
+def acc_fn(output, labels):
+  top = output.argmax(-1)
+  right = top==labels
+  return right.float().mean()
 
 def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
   device = next(model.parameters()).device
 
-  cum_nearest_neighbor_acc = 0
-  cum_mse_loss = 0
-
-  embedding_matrix = val_loader.embedding_matrix
+  cum_acc = 0
+  cum_xent_loss = 0
 
   correct_words = []
   for i, data in enumerate(val_loader):
     data = {k: d.to(device) for k,d in data.items()}
     inputs = data['features'].to(device)
     labels = data['labels'].long()
-    target_embeddings = data['target_embeddings']
 
     with torch.no_grad():
       outputs = model(inputs)
-      mse_loss = mse_loss_fn(outputs, labels, embedding_matrix)
-      cum_mse_loss += mse_loss
+      xent_loss = xentropy_loss_fn(outputs, labels)
+      cum_xent_loss += xent_loss
 
       if h.get('eval_acc', False):
-        nearest_neighbor_acc = nearest_neighbor_acc_fn(outputs, labels, embedding_matrix)
-        cum_nearest_neighbor_acc += nearest_neighbor_acc
+        acc = acc_fn(outputs, labels)
+        cum_acc += acc
 
   steps = i+1
   metric_tracker.Track(val_type, 'global_step', global_step)
   if h.get('eval_acc', False):
-    metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_nearest_neighbor_acc/steps))
-  metric_tracker.Track(val_type, 'mse_loss', Torch2Py(cum_mse_loss.detach()/steps))
+    metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_acc/steps))
+  metric_tracker.Track(val_type, 'xent_loss', Torch2Py(cum_xent_loss.detach()/steps))
 
 def Train(train_loader, model, loss_fn, optimizer, h, mt):
 
   device = next(model.parameters()).device
 
   n_batches = int(len(train_loader.dataset)/h['batch_size'])
-  embedding_matrix = train_loader.embedding_matrix
 
   logging.info("TRAINING")
   tot_batches = n_batches*h['epochs']
   logging.info("total batches: %s" % tot_batches)
   global_step = 0
-
-  acc_fn = nearest_neighbor_acc_fn
 
   scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=h['lr_step_size'], gamma=h['lr_decay'])
   bad_loss = False
@@ -132,13 +89,12 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
       data = {k: d.to(device) for k,d in data.items()}
       inputs = data['features']
       labels = data['labels']
-      target_embeddings = data['target_embeddings']
 
       optimizer.zero_grad()
 
       outputs = model(inputs)
 
-      loss = loss_fn(outputs, labels, embedding_matrix)
+      loss = loss_fn(outputs, labels)
 
       add_loss_weight = h.get('end_of_word_loss_weight', 0)
       if add_loss_weight:
@@ -156,7 +112,7 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
       if global_step % one_tenth == 0 or global_step < one_tenth and global_step % (one_tenth // 10) == 0 or global_step==1:
         ns_per_example = ((time.time()-start)/(h['batch_size']*(i+1)))*1e6
         if h.get('eval_acc', False):
-          accuracy = acc_fn(outputs, labels, embedding_matrix)
+          accuracy = acc_fn(outputs, labels)
           mt.Track('train', 'accuracy', Torch2Py(accuracy))
 
         mt.Track('train', 'global_step', global_step)
@@ -224,7 +180,6 @@ class VocabDataset(torch.utils.data.Dataset):
     char_encoded_input = self.data['word_char_encoding'][idx]
 
     item = {
-      'target_embeddings': self.data['embeddings'][idx],
       'labels': self.data['word_indices'][idx].long(),
     }
 
@@ -391,8 +346,7 @@ class ConvSegment(nn.Module):
     if activation == 'relu':
       self.conv_activation = nn.ReLU()
     if activation == 'gelu':
-      Gelu = LambdaLayer(gelu)
-      self.conv_activation = Gelu
+      self.conv_activation = gelu
     elif activation == 'sigmoid':
       self.conv_activation = nn.Sigmoid()
 
@@ -440,7 +394,7 @@ class TokensToEmb(nn.Module):
 
     self.segment2 = ConvSegment(seg1_out_size, h['conv_activation'], h['seg2.kernel|filter_sizes'])
     seg2_out_size = h['seg2.kernel|filter_sizes'][-1][1]
-    self.final_conv = nn.Conv1d(seg2_out_size, h['token_embedding_size'], 1)
+    self.vocab_project = nn.Conv1d(seg2_out_size, h['token_vocab_size'], 1)
 
 
     # this probs isnt necessary - but if i decide to change the shapes it might be useful later.
@@ -454,7 +408,7 @@ class TokensToEmb(nn.Module):
 
     # end of word attention heuristic
     if self.end_of_word_weight:
-      pass # idk what this was dooin
+      pass 
       # Hardcode attention
       # bs = len(x)
       # attn = torch.zeros(bs, self.sequence_len, device='cuda', requires_grad=False)
@@ -473,13 +427,13 @@ class TokensToEmb(nn.Module):
 
   def forward_second_half(self, x):
     seg2_out = self.segment2(x)
-    embedding_out = self.final_conv(seg2_out).permute(0,2,1)
-    return embedding_out
+    logits = self.vocab_project(seg2_out).permute(0,2,1)
+    return logits
 
   def forward(self, x):
     # Only generate 1 embedding no matter what the first few layers of conv produce
     h1 = self.forward_first_half(x)
-    embedding_out = self.forward_second_half(h1)
+    embedding_out = self.forward_second_half(h1[:,:,:1])
     return embedding_out.squeeze(1)
 
 class Net(nn.Module):
@@ -496,6 +450,12 @@ def InitDataset(exp_info, dev='cuda'):
                     exp_info['embedding_file'],
                     exp_info['word_length'],
                     misspelling_rate="not set")
+
+  # hacky to pass data dependent model hyperparams
+  exp_info['data_info'] = {}
+  exp_info['data_info']['char_vocab_size'] = len(ds.char_to_idx_map)
+  exp_info['data_info']['token_vocab_size'] = len(ds.embedding_matrix)
+  
   logging.debug("n_train_examples: %s" % len(ds))
 
   return ds
@@ -533,8 +493,6 @@ def RunOne(h, model, data, mt, dev='cuda'):
     data, batch_size=h['batch_size'], shuffle=True, num_workers=os.cpu_count())
   validation_loader = DataLoader(
     data, batch_size=1000, shuffle=False, num_workers=os.cpu_count())
-  train_loader.embedding_matrix = data.embedding_matrix.to(dev)
-  validation_loader.embedding_matrix = train_loader.embedding_matrix
   logging.debug("n_train_batches: %s" % (len(train_loader.dataset)//h['batch_size']))
 
   logging.info("Experiment Model:\n" + str(model))
@@ -560,22 +518,8 @@ def RunOne(h, model, data, mt, dev='cuda'):
     optimizer = optim.SGD(model.parameters(), lr=h['learning_rate'], momentum=h['momentum'])
   if h['optimizer'] == 'adam':
     optimizer = optim.Adam(model.parameters(), lr=h['learning_rate'])
-  if h['loss_fn'] == 'mse':
-    loss_fn = mse_loss_fn
-  elif h['loss_fn'] == 'dot_entropy':
-    loss_fn = dot_entropy_loss
-  elif h['loss_fn'] == 'dot_mse':
-    loss_fn = get_dot_mse_loss_fn(h['dot_loss_weight'])
-  elif h['loss_fn'] == 'mse_entropy':
-    loss_fn = mse_entropy_loss
-  elif h['loss_fn'] == 'dot_entropy_norm':
-    loss_fn = dot_entropy_loss_with_norm_penalty(h['norm_weight'])
-  elif h['loss_fn'] == 'l1_entropy':
-    loss_fn = l1_entropy_loss
-  elif h['loss_fn'] == 'l1':
-    loss_fn = l1_loss_fn
-  elif h['loss_fn'] == 'l1_sharp':
-    loss_fn = l1_sharp
+  if h['loss_fn'] == 'xent':
+    loss_fn = xentropy_loss_fn
 
   success, step = Train(train_loader,
         model, loss_fn, optimizer, h, mt)
