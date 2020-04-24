@@ -134,3 +134,12 @@ experiment_runner.py
 models/
 results/
 .started/
+results.bak/
+
+single_word_pred/preproc_distilbert_vocab_emb.pt
+single_word_pred/experiment_runner.py
+single_word_pred/char_to_idx_map.pt
+single_word_pred/distilbert_embedding_matrix.pt
+single_word_pred/bert-base-uncased-vocab.txt
+single_emb_pred/experiment_runner.py
+

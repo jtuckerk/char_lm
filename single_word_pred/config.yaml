@@ -34,7 +34,7 @@ hyperparameters:
   optimizer:
     - 'adam'
   epochs:
-    - 100
+    - 0
   space_freq:
     - 1
   lr_step_size:
@@ -52,4 +52,10 @@ hyperparameters:
   end_of_word_loss_weight:
     - 0.0
   add_random_count:
+    - 3
+  model_checkpoint:
+    - models/848148fbf
+  misspelling_rate:
+    - 0
+  misspelling_transforms:
     - 0

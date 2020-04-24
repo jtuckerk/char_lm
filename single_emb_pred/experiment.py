@@ -27,7 +27,7 @@ logging.basicConfig(
 
 
 MSE = nn.MSELoss()
-L1 = nn.L1Loss()
+
 def mse_loss_fn(outputs, labels, embedding_matrix):
   return MSE(outputs, embedding_matrix[labels])
 
@@ -233,8 +233,8 @@ class VocabDataset(torch.utils.data.Dataset):
 
     end = self.end_of_word(char_encoded_input)
     item['end_of_word_index'] = end
-    for i in range(self.add_random_count):
-      if torch.rand(size=())<.8: # skip 1/5 of the time
+    if torch.rand(size=())<.9: # skip 1/10th of the time
+      for i in range(self.add_random_count):
         char_encoded_input =self.add_random_next_word(char_encoded_input, end)
         end = self.end_of_word(char_encoded_input)
 
@@ -269,7 +269,7 @@ class VocabDataset(torch.utils.data.Dataset):
     repeat_map = defaultdict(int)
     for w in word_encodings:
       repeat_map[tuple(w)]+=1
-    valid_list = [1 if x<=1 else 0 for x in repeat_map.values()]
+    valid_list = [1 if repeat_map[tuple(x)]<=1 else 0 for x in word_encodings]
     word_char_encoding = torch.tensor(word_encodings, dtype=torch.int64)
     valid_list = torch.tensor(valid_list, dtype=torch.int64)
     word_char_encoding = word_char_encoding[torch.where(valid_list==1)]
@@ -354,25 +354,33 @@ class VocabDataset(torch.utils.data.Dataset):
     )
 
   def end_of_word(self, char_encoded_input):
-    pads = torch.where(char_encoded_input==0)
-    if pads[0].nelement() == 0:
-      end = torch.LongTensor([char_encoded_input.size()[0]])[0]-1
-      return end
-    end = pads[0][0]
-    return end
+    chars = char_encoded_input!=0
+    return chars.sum(-1)
 
+  def append_single(self, char_encoded_input, add_word, end):
+    c_len = len(char_encoded_input)
+    if torch.rand(size=())>=self.space_freq:
+      end = torch.clamp(end, max=c_len-1)
+      char_encoded_input[end:] = self.data['word_char_encoding'][add_word][:c_len-end]
+    else:
+      char_encoded_input[end:end+1] = self.data['char_to_idx_map'][' '] # space char
+      end = torch.clamp(end, max=c_len-1)
+      char_encoded_input[end+1:] = self.data['word_char_encoding'][add_word][:c_len-end-1]
+    return char_encoded_input
+      
   def add_random_next_word(self, char_encoded_input, end):
     # returns the word with a random word added at the end of the word
-    # and the index after the end of the word.
-
-    add_word = torch.randint(0, len(self.data['embeddings']), ())
     char_encoded_input = char_encoded_input.clone()
-    # add a space 1/2 the time
-    if torch.rand(size=())>=self.space_freq:
-      char_encoded_input[end:] = self.data['word_char_encoding'][add_word][:len(char_encoded_input)-end]
+    if len(char_encoded_input.size())>=2:
+      add_word = torch.randint(0, len(self.data['embeddings']), (len(char_encoded_input),))
+      new_words=[]
+      for i, single_encoded in enumerate(char_encoded_input):
+        new_words.append(self.append_single(single_encoded, add_word[i], end[i]))
+      char_encoded_input = torch.stack(new_words)
     else:
-      char_encoded_input[end] = self.data['char_to_idx_map'][' '] # space char
-      char_encoded_input[end+1:] = self.data['word_char_encoding'][add_word][:len(char_encoded_input)-end-1]
+      add_word = torch.randint(0, len(self.data['embeddings']), ())
+      char_encoded_input = self.append_single(char_encoded_input, add_word, end)
+
     return char_encoded_input
 
 class LambdaLayer(nn.Module):

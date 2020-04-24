@@ -23,10 +23,12 @@ def GetHyperParams(results, seen_hashes):
   cp = h.get('model_checkpoint', None)
   if cp and cp.split('/')[-1] in seen_hashes:
     expanded['from_uid'] = cp.split('/')[-1]
+
+  # Expand hyperparams with lists
   for k, v in h.items():
     if type(v)== bool:
       h[k] = int(v)
-    if type(v) == list:
+    elif type(v) == list:
       lists.append(k)
       names = [k]
       pref = False

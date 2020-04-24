@@ -39,9 +39,9 @@ hyperparameters:
   optimizer:
     - 'adam'
   epochs:
-    - 200
+    - 100
   space_freq:
-    - .50
+    - 1
   lr_step_size:
     - 190700
   lr_decay:
@@ -59,6 +59,8 @@ hyperparameters:
   add_random_count:
     - 3
   misspelling_rate:
-    - 1
+    - 0
   misspelling_transforms:
-    - 1
+    - 0
+  model_checkpoint:
+    - models/95b17bb6f
