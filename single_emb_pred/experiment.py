@@ -8,7 +8,6 @@ import logging
 import copy
 import yaml
 from collections import defaultdict
-from torch.utils.checkpoint import checkpoint_sequential
 import os
 import math
 
@@ -253,7 +252,10 @@ class VocabDataset(torch.utils.data.Dataset):
     bert_vocab = []
     with open(vocab_file) as f:
       for l in f.readlines():
-        bert_vocab.append(l.strip())
+        word = l.strip()
+        if word.startswith("##"):
+          word = word.replace("##", "")
+        bert_vocab.append(word)
 
     bert_emb = torch.load(embedding_file)
     assert len(bert_vocab) == len(bert_emb)
@@ -494,6 +496,7 @@ class Net(nn.Module):
   def __init__(self, h):
     super(Net, self).__init__()
     self.tokens_to_emb = TokensToEmb(h)
+    
   def forward(self, x):
     return self.tokens_to_emb(x)
 
@@ -560,9 +563,11 @@ def RunOne(h, model, data, mt, dev='cuda'):
     min_size, max_size = h['model_size_range_bytes']
     if size_bytes < min_size or size_bytes > max_size:
       logging.info("Model size (%s bytes) outside of acceptable range. skipping" % size_bytes)
-      return {'val': {'size_bytes': size_bytes,
-                      'size_params': size_params},
-              'exit_info': 'size outside of range. skipping'}, model
+      mt.AddExpInfo('size_params', size_params)
+      mt.AddExpInfo('size_bytes', size_bytes)
+      mt.AddExpInfo('exit_info', 'size outside of range. skipping')
+      return model
+              
 
   if h['optimizer'] == 'sgd':
     optimizer = optim.SGD(model.parameters(), lr=h['learning_rate'], momentum=h['momentum'])
@@ -570,20 +575,6 @@ def RunOne(h, model, data, mt, dev='cuda'):
     optimizer = optim.Adam(model.parameters(), lr=h['learning_rate'])
   if h['loss_fn'] == 'mse':
     loss_fn = mse_loss_fn
-  elif h['loss_fn'] == 'dot_entropy':
-    loss_fn = dot_entropy_loss
-  elif h['loss_fn'] == 'dot_mse':
-    loss_fn = get_dot_mse_loss_fn(h['dot_loss_weight'])
-  elif h['loss_fn'] == 'mse_entropy':
-    loss_fn = mse_entropy_loss
-  elif h['loss_fn'] == 'dot_entropy_norm':
-    loss_fn = dot_entropy_loss_with_norm_penalty(h['norm_weight'])
-  elif h['loss_fn'] == 'l1_entropy':
-    loss_fn = l1_entropy_loss
-  elif h['loss_fn'] == 'l1':
-    loss_fn = l1_loss_fn
-  elif h['loss_fn'] == 'l1_sharp':
-    loss_fn = l1_sharp
 
   success, step = Train(train_loader,
         model, loss_fn, optimizer, h, mt)

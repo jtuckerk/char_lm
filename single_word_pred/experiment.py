@@ -12,7 +12,6 @@ import logging
 import copy
 import yaml
 from collections import defaultdict
-from torch.utils.checkpoint import checkpoint_sequential
 import os
 
 level = logging.getLevelName("INFO")
@@ -208,7 +207,10 @@ class VocabDataset(torch.utils.data.Dataset):
     bert_vocab = []
     with open(vocab_file) as f:
       for l in f.readlines():
-        bert_vocab.append(l.strip())
+        word = l.strip()
+        if word.startswith("##"):
+          word = word.replace("##", "")
+        bert_vocab.append(word)
 
     bert_emb = torch.load(embedding_file)
     assert len(bert_vocab) == len(bert_emb)
@@ -441,7 +443,7 @@ class TokensToEmb(nn.Module):
   def forward(self, x):
     # Only generate 1 embedding no matter what the first few layers of conv produce
     h1 = self.forward_first_half(x)
-    embedding_out = self.forward_second_half(h1[:,:,:1])
+    embedding_out = self.forward_second_half(h1)
     return embedding_out.squeeze(1)
 
 class Net(nn.Module):

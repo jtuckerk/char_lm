@@ -2,14 +2,14 @@ experiment_name: single_embedding_prediction
 vocab_file: bert-base-uncased-vocab.txt
 char_to_idx_file: char_to_idx_map.pt
 embedding_file: distilbert_embedding_matrix.pt
-word_length: 12
+word_length: 18
 hyperparameters:
   misspelling_rate:
     - 0
   misspelling_transforms:
     - null  
   word_length:
-    - 12
+    - 18
   char_vocab_size:
     - 70
   char_embedding_size:
@@ -19,17 +19,17 @@ hyperparameters:
   seg1_type:
     - 'unfold'
   seg1.kernel_size:
-    - 12
+    - 5
   seg2.kernel|filter_sizes:
     -
-      - [1,2048]
-      - [1,2048]  
+      - [5,768]
+      - [10,2048]  
       - [1,2048]  
       - [1,2048]  
   token_embedding_size:
     - 768
   batch_size:
-    - 128
+    - 512
   learning_rate:
     - .0001
   loss_fn:
@@ -39,7 +39,7 @@ hyperparameters:
   optimizer:
     - 'adam'
   epochs:
-    - 100
+    - 200
   space_freq:
     - 1
   lr_step_size:
@@ -53,14 +53,14 @@ hyperparameters:
   random_seed:
     - 3
   model_size_range_bytes:
-    - [0, 9.0e+7]
+    - [0, 1.1e+8]
   end_of_word_loss_weight:
     - 0.0
   add_random_count:
-    - 3
+    - 4
   misspelling_rate:
-    - 0
+    - .5
   misspelling_transforms:
-    - 0
+    - 1
   model_checkpoint:
-    - models/95b17bb6f
+    - models/dec037524
