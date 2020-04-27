@@ -84,7 +84,7 @@ if __name__ == "__main__":
   result_dir = experiment_dir + '/results'
   hashes = os.listdir(result_dir)
   result_files = [os.path.join(result_dir, fname) for fname in hashes]
-
+  print("%s result files found" % len(result_files))
   for fname in result_files:
     with open(fname, 'r') as f:
       yaml = safe_load(f.read())
@@ -93,7 +93,7 @@ if __name__ == "__main__":
       results.append(yaml)
 
   results = [r for r in results if not 'exit_info' in r]
-  flats = [GetFlatInfoResults(x, hashes) for x in results if 'xent_loss' in x['val']]
+  flats = [GetFlatInfoResults(x, hashes) for x in results]
 
   normalize(flats)
   exp_vis = hip.Experiment.from_iterable(flats)

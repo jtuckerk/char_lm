@@ -5,7 +5,7 @@ embedding_file: distilbert_embedding_matrix.pt
 word_length: 18
 hyperparameters:
   embedding_noise:
-    - .3
+    - .25
   word_length:
     - 18
   char_vocab_size:
@@ -25,7 +25,6 @@ hyperparameters:
     - 512
   learning_rate:
     - 0.0001
-    - 0.00001
   loss_fn:
     - 'xent'
   optimizer:
@@ -45,5 +44,5 @@ hyperparameters:
   model_size_range_bytes:
     - [0, 1.1e+8]
   model_checkpoint:
-    - models/46417cf5e
+    - models/db5b7cbd3
   
