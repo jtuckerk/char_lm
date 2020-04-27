@@ -4,6 +4,8 @@ char_to_idx_file: char_to_idx_map.pt
 embedding_file: distilbert_embedding_matrix.pt
 word_length: 18
 hyperparameters:
+  embedding_noise:
+    - .3
   word_length:
     - 18
   char_vocab_size:
@@ -21,11 +23,9 @@ hyperparameters:
     - 768
   batch_size:
     - 512
-    - 128
-    - 32
   learning_rate:
-    - .000333
-    - .0001
+    - 0.0001
+    - 0.00001
   loss_fn:
     - 'xent'
   optimizer:
@@ -45,5 +45,5 @@ hyperparameters:
   model_size_range_bytes:
     - [0, 1.1e+8]
   model_checkpoint:
-    - models/a1ecc37ef
+    - models/46417cf5e
   

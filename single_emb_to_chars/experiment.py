@@ -127,11 +127,11 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
 class ReverseVocabDataset(torch.utils.data.Dataset):
   """Dataset with features: token embeddings and labels: characters
   """
-  def __init__(self, vocab_file, char_to_idx_file, embedding_file, word_length):
+  def __init__(self, vocab_file, char_to_idx_file, embedding_file, word_length, embedding_noise=0.0):
     self.data = self._preprocess(vocab_file, char_to_idx_file, embedding_file, word_length)
     self.data['word_indices'] = torch.arange(len(self.data['embeddings'])).cuda()
     self.char_to_idx_map = self.data['char_to_idx_map']
-
+    self.embedding_noise = embedding_noise
 
   def __len__(self):
     return len(self.data['word_char_encoding'])
@@ -143,8 +143,15 @@ class ReverseVocabDataset(torch.utils.data.Dataset):
       'char_labels': char_encoded_input.long(),
       'tok_labels': self.data['word_indices'][idx],
       'mask': mask,
-      'features': self.data['embeddings'][idx],
     }
+    embeddings = self.data['embeddings'][idx] 
+    if self.embedding_noise:
+      r = torch.normal(mean=self.embedding_noise, std=1, size=embeddings.size()).cuda()
+      norm_factor = torch.norm(r, 2, -1).mean()/self.embedding_noise
+      normalized_noise = r/norm_factor
+      item['features'] = embeddings + normalized_noise
+    else:
+      item['features'] = embeddings
 
     return item
 
@@ -276,6 +283,8 @@ def CleanupExperiment(model):
 def RunOne(h, model, data, mt, dev='cuda'):
   model.to(dev)
 
+  data.embedding_noise = h.get('embedding_noise')
+  
   if 'seed' in h:
     torch.manual_seed(h['seed'])
 
