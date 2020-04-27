@@ -1,7 +1,8 @@
-experiment_name: token_start_pos_prediction
-#dataset_file: news2007_tok96_char384_enc_no_tok.pt
-dataset_file: imdb_tok96_char384_enc_no_tok.pt
-dataset_split: [.9, .1]
+experiment_name: single_embedding_prediction
+vocab_file: bert-base-uncased-vocab.txt
+char_to_idx_file: char_to_idx_map.pt
+embedding_file: distilbert_embedding_matrix.pt
+word_length: 18
 hyperparameters:
   word_length:
     - 18
@@ -13,20 +14,24 @@ hyperparameters:
     - 'relu'
   conv.kernel|filter_sizes:
     -
-      - [6,256]
-      - [5,128]  
-      - [4,128]  
-      - [1,1]  
+      - [1,768]
+      - [1,2048]  
+      - [1,2048]  
+  token_embedding_size:
+    - 768
   batch_size:
     - 512
+    - 128
+    - 32
   learning_rate:
+    - .000333
     - .0001
   loss_fn:
-    - 'bce'
+    - 'xent'
   optimizer:
     - 'adam'
   epochs:
-    - 0
+    - 50
   lr_step_size:
     - 190700
   lr_decay:
@@ -40,5 +45,5 @@ hyperparameters:
   model_size_range_bytes:
     - [0, 1.1e+8]
   model_checkpoint:
-    - models/b8d7b7834
-
+    - models/a1ecc37ef
+  

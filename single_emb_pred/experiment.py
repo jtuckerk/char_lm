@@ -181,13 +181,11 @@ class VocabDataset(torch.utils.data.Dataset):
   """Dataset with features: token characters and labels: token index or embedding
      provides a way to add random words after the token of interest and random misspellings.
   """
-  def __init__(self, vocab_file, char_to_idx_file, embedding_file, word_length, shuffle=False, normalize=False,
+  def __init__(self, vocab_file, char_to_idx_file, embedding_file, word_length, shuffle=False, 
                misspelling_rate=None, misspelling_transforms=None, misspelling_type=None,
                add_next_word=False, add_random_count=0, space_freq=1.0):
     self.data = self._preprocess(vocab_file, char_to_idx_file, embedding_file, word_length)
     self.keys=['word_char_encoding', 'embeddings']
-    if normalize:
-      self.data['embeddings'] = self.data['embeddings']/self.data['embeddings'].norm(dim=-1, p=2).unsqueeze(-1)
     self.misspelling_rate =misspelling_rate
     self.misspelling_transforms=misspelling_transforms
     self.misspelling_type=misspelling_type
@@ -195,10 +193,6 @@ class VocabDataset(torch.utils.data.Dataset):
     self.add_random_count = add_random_count
     self.space_freq = space_freq
     self.embedding_matrix = self.data['embeddings']
-    if shuffle:
-      r = torch.randperm(self.nelement())
-      for k in self.keys:
-        self.data[k][r] = self.data[k]
 
     self.data['word_indices'] = torch.arange(len(self.data['embeddings']))
     self.char_to_idx_map = self.data['char_to_idx_map']

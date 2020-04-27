@@ -8,7 +8,6 @@ import logging
 import copy
 import yaml
 from collections import defaultdict
-import torch.nn.functional as F
 import os
 import math
 
@@ -19,40 +18,49 @@ logging.basicConfig(
   datefmt="%H:%M:%S",
 )
 
+# TODO
+# Incorporate mask into loss so that embeddings with norm 0 can be predicted for non-word chars
+
 Torch2Py = lambda x: x.cpu().numpy().tolist()
 
-def bin_acc_fn(outputs, labels):
-  binary = outputs>.5
-  right = binary==labels
-  return right.float().mean()
+xent = nn.CrossEntropyLoss()
+def xent_loss_fn(output, labels):
+  return xent(output.view(-1, output.size(-1)), labels.view(-1))
 
-BCE_loss = nn.BCELoss()
-def bce_loss_fn(outputs, labels):
-  return BCE_loss(outputs, labels)
+# returns char acc and word acc
+def acc_fn(output, labels):
+  top = output.argmax(-1)
+  right = top==labels
+  char_acc = right.float().mean()
+  word_acc = (right.sum(-1)==right.shape[-1]).float().mean()
+  return char_acc, word_acc
 
 def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
-  cum_acc = 0
-  cum_bce_loss = 0
+  cum_char_acc = 0
+  cum_word_acc = 0
+  cum_xent_loss = 0
 
+  correct_words = []
   for i, data in enumerate(val_loader):
-    inputs = data['char_encoded_seqs']
-    labels = data['token_start_positions']
+    inputs = data['features']
+    labels = data['char_labels']
 
     with torch.no_grad():
       outputs = model(inputs)
-      bce_loss = bce_loss_fn(outputs, labels)
-      cum_bce_loss += bce_loss
+      xent_loss = xent_loss_fn(outputs, labels)
+      cum_xent_loss += xent_loss
 
-      acc = bin_acc_fn(outputs, labels)
-      cum_acc += acc
+      char_acc, word_acc = acc_fn(outputs, labels)
+      cum_char_acc += char_acc
+      cum_word_acc += word_acc
 
   steps = i+1
   metric_tracker.Track(val_type, 'global_step', global_step)
-  metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_acc/steps))
-  metric_tracker.Track(val_type, 'bce_loss', Torch2Py(cum_bce_loss.detach()/steps))
+  metric_tracker.Track(val_type, 'char_acc', Torch2Py(cum_char_acc/steps))
+  metric_tracker.Track(val_type, 'word_acc', Torch2Py(cum_word_acc/steps))
+  metric_tracker.Track(val_type, 'xent_loss', Torch2Py(cum_xent_loss.detach()/steps))
 
 def Train(train_loader, model, loss_fn, optimizer, h, mt):
-
   n_batches = int(len(train_loader.dataset)/h['batch_size'])
 
   logging.info("TRAINING")
@@ -73,14 +81,19 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
     thrash_rate = 100
     for i, data in enumerate(train_loader):
       global_step += 1
-      inputs = data['char_encoded_seqs']
-      labels = data['token_start_positions']
+      inputs = data['features']
+      labels = data['char_labels']
 
       optimizer.zero_grad()
 
       outputs = model(inputs)
 
       loss = loss_fn(outputs, labels)
+
+      add_loss_weight = h.get('end_of_word_loss_weight', 0)
+      if add_loss_weight:
+        end_of_word_indices = data['end_of_word_index']
+        loss += torch.nn.CrossEntropyLoss()(model.end_word_pred, end_of_word_indices)*add_loss_weight
 
       loss.backward()
       optimizer.step()
@@ -92,9 +105,9 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
       # Log frequency
       if global_step % one_tenth == 0 or global_step < one_tenth and global_step % (one_tenth // 10) == 0 or global_step==1:
         ns_per_example = ((time.time()-start)/(h['batch_size']*(i+1)))*1e6
-        accuracy = bin_acc_fn(outputs, labels)
-
-        mt.Track('train', 'accuracy', Torch2Py(accuracy))
+        char_acc, word_acc = acc_fn(outputs, labels)
+        mt.Track('train', 'char_acc', Torch2Py(char_acc))
+        mt.Track('train', 'word_acc', Torch2Py(word_acc))
         mt.Track('train', 'global_step', global_step)
         mt.Track('train', 'epoch', epoch)
         mt.Track('train', 'loss', Torch2Py(loss.detach()), 3)
@@ -111,23 +124,71 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
 
   return not bad_loss, global_step
 
-class TokenStartDataset(torch.utils.data.Dataset):
-  """Dataset with features: int encoded characters and labels: token start index position
+class ReverseVocabDataset(torch.utils.data.Dataset):
+  """Dataset with features: token embeddings and labels: characters
   """
-  def __init__(self, data_file, device='cuda'):
-    self.data = torch.load(data_file)
-    self.data['char_encoded_seqs'] = self.data['chars_encoded'].to(device).long()
-    self.data['token_start_positions'] = self.data['token_start_offsets'].to(device).float()
-    assert len(self.data['char_encoded_seqs']) == len(self.data['token_start_positions'])
-    
+  def __init__(self, vocab_file, char_to_idx_file, embedding_file, word_length):
+    self.data = self._preprocess(vocab_file, char_to_idx_file, embedding_file, word_length)
+    self.data['word_indices'] = torch.arange(len(self.data['embeddings'])).cuda()
+    self.char_to_idx_map = self.data['char_to_idx_map']
+
+
   def __len__(self):
-    return len(self.data['char_encoded_seqs'])
+    return len(self.data['word_char_encoding'])
 
   def __getitem__(self, idx):
-    return {
-      'char_encoded_seqs': self.data['char_encoded_seqs'][idx],
-      'token_start_positions': self.data['token_start_positions'][idx]
+    char_encoded_input = self.data['word_char_encoding'][idx]
+    mask = char_encoded_input!=0
+    item = {
+      'char_labels': char_encoded_input.long(),
+      'tok_labels': self.data['word_indices'][idx],
+      'mask': mask,
+      'features': self.data['embeddings'][idx],
     }
+
+    return item
+
+  def GetCharEncoding(self, word, char_to_idx_map, word_length):
+    enc = [0]*word_length
+    for i, c in enumerate(word):
+      if i>= word_length:
+        break
+      enc[i] = char_to_idx_map.get(c,0)
+    return enc
+
+  def _preprocess(self, vocab_file, char_to_idx_file, embedding_file, word_length):
+    bert_vocab = []
+    with open(vocab_file) as f:
+      for l in f.readlines():
+        word = l.strip()
+        if word.startswith("##"):
+          word = word.replace("##", "")
+        bert_vocab.append(word)
+
+    bert_emb = torch.load(embedding_file)
+    assert len(bert_vocab) == len(bert_emb)
+    longest_word_in_bert_vocab = max([len(w) for w in bert_vocab])
+
+    char_to_idx_map = torch.load(char_to_idx_file)
+
+    word_encodings = []
+    for word in bert_vocab:
+      encoding = self.GetCharEncoding(word.lower(), char_to_idx_map, word_length)
+      word_encodings.append(encoding)
+
+    repeat_map = defaultdict(int)
+    for w in word_encodings:
+      repeat_map[tuple(w)]+=1
+    valid_list = [1 if repeat_map[tuple(x)]<=1 else 0 for x in word_encodings]
+    word_char_encoding = torch.tensor(word_encodings, dtype=torch.int64)
+    valid_list = torch.tensor(valid_list, dtype=torch.int64)
+    word_char_encoding = word_char_encoding[torch.where(valid_list==1)]
+
+    embeddings = bert_emb[torch.where(valid_list==1)]
+    return {"word_char_encoding":word_char_encoding.cuda(),
+            "embeddings": embeddings.cuda(),
+            "char_to_idx_map":char_to_idx_map}
+
 
 class LambdaLayer(nn.Module):
   def __init__(self, lambd):
@@ -138,15 +199,6 @@ class LambdaLayer(nn.Module):
 
 def gelu(x):
   return 0.5 * x * (1.0 + torch.erf(x / math.sqrt(2.0)))
-
-class PadLayer(nn.Module):
-  def __init__(self, pad_size, start_pad=0):
-    super(PadLayer, self).__init__()
-    self.pad_size = pad_size
-    self.start_pad = start_pad
-
-  def forward(self, x):
-    return F.pad(x, (self.start_pad, self.pad_size-self.start_pad))      
 
 class ConvSegment(nn.Module):
   def __init__(self, input_channels, activation, kernel_filters_sizes):
@@ -161,61 +213,49 @@ class ConvSegment(nn.Module):
 
     self.convs = []
 
-    first_conv=True
     last_out_chan = input_channels
     for k, f in kernel_filters_sizes:
-      start_pad = k//2 if first_conv else 0
-      self.convs.append(PadLayer(k-1, start_pad))
       self.convs.append(nn.Conv1d(last_out_chan, f, k))
       self.convs.append(self.conv_activation)
       last_out_chan = f
-      first_conv = False
-      
     self.convs = nn.Sequential(*self.convs)
 
   def forward(self, x):
     return self.convs(x)
 
-class TokStartAttn(nn.Module):
+
+class EmbToTokens(nn.Module):
   def __init__(self, h):
-    super(TokStartAttn, self).__init__()
-    self.emb = nn.Embedding(h['char_vocab_size'], h['char_embedding_size'])
+    super(EmbToTokens, self).__init__()
 
-    self.char_input_window_size = h['conv.kernel|filter_sizes'][0][0]
-    self.conv = ConvSegment(h['char_embedding_size'], h['conv_activation'], h['conv.kernel|filter_sizes'])
+    self.conv = ConvSegment(h['token_embedding_size'], h['conv_activation'], h['conv.kernel|filter_sizes'])
     conv_out_size = h['conv.kernel|filter_sizes'][-1][1]
-
-    # no nonlinearity
-    self.final_conv = nn.Conv1d(conv_out_size, 1, 1)
+    self.word_len, self.char_vocab_size = h['word_length'], h['char_vocab_size']
+    self.final_conv = nn.Conv1d(conv_out_size, h['word_length']*h['char_vocab_size'], 1)
 
   def forward(self, x):
+    convout = self.conv(x)
+    return self.final_conv(convout).reshape(-1, self.word_len, self.char_vocab_size)
 
-    embout = self.emb(x).permute(0,2,1)
-    char_block = self.conv(embout)
-    char_block_logits = self.final_conv(char_block).permute(0,2,1).squeeze(-1)
-
-    return char_block_logits
-    
 class Net(nn.Module):
   def __init__(self, h):
     super(Net, self).__init__()
-    self.tokens_start_attn = TokStartAttn(h)
+    self.emb_to_toks = EmbToTokens(h)
     
   def forward(self, x):
-    return torch.nn.Sigmoid()(self.tokens_start_attn(x))
+    # batchXChannelsXseq
+    x=x.unsqueeze(-1)
+    return self.emb_to_toks(x)
 
 def InitDataset(exp_info, dev='cuda'):
   # load and process on cpu and load each batch to GPU in the training loop
-  ds = TokenStartDataset(exp_info['dataset_file'], dev)
-  tr, va = exp_info['dataset_split'] # the rest is test
-  n_train_examples, n_val_examples = int(len(ds)*tr), int(len(ds)*va)
-  n_test_examples = len(ds)- n_train_examples - n_val_examples
-  train_d, val_d, test_d = torch.utils.data.random_split(
-    ds, [n_train_examples,n_val_examples,n_test_examples])
-  logging.debug("n_train_examples: %s" % n_train_examples)
-  logging.debug("n_val_examples: %s" % n_val_examples)
+  ds = ReverseVocabDataset(exp_info['vocab_file'],
+                           exp_info['char_to_idx_file'],
+                           exp_info['embedding_file'],
+                           exp_info['word_length'])
+  logging.debug("n_train_examples: %s" % len(ds))
 
-  return train_d, val_d, test_d
+  return ds
 
 def CreateModel(h):
   model = Net(h)
@@ -232,15 +272,15 @@ def CleanupExperiment(model):
   del model
   torch.cuda.empty_cache()
 
+
 def RunOne(h, model, data, mt, dev='cuda'):
-  train_d, val_d, test_d = data
   model.to(dev)
 
   if 'seed' in h:
     torch.manual_seed(h['seed'])
 
-  train_loader = DataLoader(train_d, batch_size=h['batch_size'], shuffle=True)
-  validation_loader = DataLoader(val_d, batch_size=h['batch_size'], shuffle=False)
+  train_loader = DataLoader(data, batch_size=h['batch_size'], shuffle=True)
+  validation_loader = DataLoader(data, batch_size=1000, shuffle=False)
   logging.debug("n_train_batches: %s" % (len(train_loader.dataset)//h['batch_size']))
 
   logging.info("Experiment Model:\n" + str(model))
@@ -263,12 +303,13 @@ def RunOne(h, model, data, mt, dev='cuda'):
       mt.AddExpInfo('exit_info', 'size outside of range. skipping')
       return model
               
+
   if h['optimizer'] == 'sgd':
     optimizer = optim.SGD(model.parameters(), lr=h['learning_rate'], momentum=h['momentum'])
   if h['optimizer'] == 'adam':
     optimizer = optim.Adam(model.parameters(), lr=h['learning_rate'])
-  if h['loss_fn'] == 'bce':
-    loss_fn = bce_loss_fn
+  if h['loss_fn'] == 'xent':
+    loss_fn = xent_loss_fn
 
   success, step = Train(train_loader,
         model, loss_fn, optimizer, h, mt)
