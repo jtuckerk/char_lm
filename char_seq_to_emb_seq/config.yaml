@@ -1,0 +1,67 @@
+experiment_name: testing_bert_char_to_tok
+dataset: 'imdb_tok96_char_encoded384.pt'
+dataset_split: [.01, .06]
+input_type: char
+hyperparameters:
+  token_seq_length: 96
+  char_vocab_size: [70]
+  char_embedding_size: [8]
+  conv_activation:
+    - 'relu'
+  switchboard_activation:
+    - 'sigmoid'
+  seg1_type:
+    - 'unfold'
+  seg1.kernel_size:
+    - 18
+  seg2.kernel|filter_sizes:
+    -
+      - [1,2048]
+      - [1,2048]
+      - [1,2048]
+      - [1,2048]
+  attn_conv.kernel|filter_sizes:
+    -
+      - [6,256]
+      - [5,128]
+      - [4,128]
+      - [1,1]
+  token_embedding_size:
+    - 768
+  switchboard_type:
+    - rule_based
+  batch_size:
+    - 16
+  learning_rate:
+    - .0001
+  loss_fn:
+    - 'xentropy'
+  optimizer:
+    - 'adam'  
+  epochs:
+    - 0
+  lr_step_size:
+    - 1000
+  run_validation:
+     - True
+  seed:
+    - 0
+  input_type:
+    - char
+  sb.sigmoid:
+    - standard
+  bert_checkpoint:
+    - bert_distil_uncased
+  manual_attention:
+    - True
+    - False
+  position_embeddings:
+    - False
+  skip_bert:
+    - True
+  space_loss_weight:
+    - 0
+  freeze_modules:  
+    - ['bert, 'embedding_predict']
+  model_checkpoint:
+    - models/2638f742c+b8d7b7834
