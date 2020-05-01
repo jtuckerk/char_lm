@@ -71,8 +71,7 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
   bad_loss = False
   one_tenth = tot_batches // 10
   last_lr = optimizer.param_groups[0]['lr'] 
-  on_off_batch_losses = [] # (global_step, on_batch_loss_delta, off_batch_loss_delta) # positive is a dec in loss
-  for epoch in range(h['epochs']):  # loop over the dataset multiple times
+  for epoch in range(h['epochs']):
     start = time.time()
     running_loss = 0.0
     running_count = 0
@@ -203,7 +202,6 @@ class LSTMSwitchboard(nn.Module):
     self.sigmoid_out = sigmoid_out
     self.rnn = torch.nn.LSTM(1, out_size, layers, batch_first=True)
     self.expand_weight = nn.Linear(out_size, out_size)
-    # I thnik this will make it easier to the model to force either 0s or 1s. 
     self.sigmoid = torch.nn.Sigmoid()
     
   def forward(self, x):
@@ -237,6 +235,7 @@ class GRUSwitchboard(nn.Module):
     return out
 
 class SwitchboardAttention(nn.Module):
+  # Differentiable state machine based attention to select items in a long sequence to be kept.
   def __init__(self, out_size, sigmoid=False):
     super(SwitchboardAttention, self).__init__()
     self.out_size = out_size
@@ -434,7 +433,7 @@ class CharEmbedder(nn.Module):
       spaces = torch.where(x==1)
       act = torch.zeros_like(x)
 
-      # TODO clean
+      # TODO clean and include other special chars.
       act[spaces[0], torch.clamp(spaces[1]+1, max=act.shape[-1]-1)] = 1
 
       act[torch.where(act==0)]=-1

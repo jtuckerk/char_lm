@@ -149,7 +149,7 @@ class PadLayer(nn.Module):
     return F.pad(x, (self.start_pad, self.pad_size-self.start_pad))      
 
 class ConvSegment(nn.Module):
-  def __init__(self, input_channels, activation, kernel_filters_sizes):
+  def __init__(self, input_channels, activation, kernel_filters_sizes, center_start_pad=False):
     super(ConvSegment, self).__init__()
     if activation == 'relu':
       self.conv_activation = nn.ReLU()
@@ -164,7 +164,7 @@ class ConvSegment(nn.Module):
     first_conv=True
     last_out_chan = input_channels
     for k, f in kernel_filters_sizes:
-      start_pad = k//2 if first_conv else 0
+      start_pad = k//2 if first_conv and center_start_pad else 0
       self.convs.append(PadLayer(k-1, start_pad))
       self.convs.append(nn.Conv1d(last_out_chan, f, k))
       self.convs.append(self.conv_activation)

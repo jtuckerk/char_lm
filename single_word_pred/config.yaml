@@ -47,7 +47,7 @@ hyperparameters:
   run_validation:
      - True
   random_seed:
-    - 3
+    - 4
   model_size_range_bytes:
     - [0, 9.0e+8]
   end_of_word_loss_weight:
