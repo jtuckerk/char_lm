@@ -10,6 +10,7 @@ import yaml
 from collections import defaultdict
 import os
 import math
+import torch.nn.functional as F
 
 level = logging.getLevelName("INFO")
 logging.basicConfig(
@@ -42,6 +43,16 @@ def mse_entropy_fast(outputs, labels, embedding_matrix):
   return loss
 
 Torch2Py = lambda x: x.cpu().numpy().tolist()
+
+xent_loss = nn.CrossEntropyLoss()
+def dot_entropy_loss_fn(logits, labels):
+  loss = xent_loss(logits, labels)
+  return loss
+
+def dot_acc_fn(logits, labels):
+  top = logits.argmax(-1)
+  right = top==labels
+  return right.float().mean()
 
 def nearest_neighbor_acc_fn(outputs, labels, embedding_matrix):
   # overflows memory
@@ -76,6 +87,8 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
 
   cum_nearest_neighbor_acc = 0
   cum_mse_loss = 0
+  cum_dot_acc = 0
+  cum_dot_xent_loss = 0
 
   embedding_matrix = val_loader.embedding_matrix
 
@@ -89,17 +102,22 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
     with torch.no_grad():
       outputs = model(inputs)
       mse_loss = mse_loss_fn(outputs, labels, embedding_matrix)
+      logits = torch.matmul(outputs, embedding_matrix.T)
+      cum_dot_xent_loss += dot_entropy_loss_fn(logits, labels)
       cum_mse_loss += mse_loss
 
       if h.get('eval_acc', False):
         nearest_neighbor_acc = nearest_neighbor_acc_fn(outputs, labels, embedding_matrix)
         cum_nearest_neighbor_acc += nearest_neighbor_acc
+        cum_dot_acc += dot_acc_fn(logits, labels)
 
   steps = i+1
   metric_tracker.Track(val_type, 'global_step', global_step)
   if h.get('eval_acc', False):
     metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_nearest_neighbor_acc/steps))
+    metric_tracker.Track(val_type, 'dot_acc', Torch2Py(cum_dot_acc/steps))
   metric_tracker.Track(val_type, 'mse_loss', Torch2Py(cum_mse_loss.detach()/steps))
+  metric_tracker.Track(val_type, 'dot_xent_loss', Torch2Py(cum_dot_xent_loss.detach()/steps))
 
 def Train(train_loader, model, loss_fn, optimizer, h, mt):
 
@@ -139,11 +157,13 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
 
       loss = loss_fn(outputs, labels, embedding_matrix)
 
-      add_loss_weight = h.get('end_of_word_loss_weight', 0)
-      if add_loss_weight:
-        end_of_word_indices = data['end_of_word_index']
-        loss += torch.nn.CrossEntropyLoss()(model.end_word_pred, end_of_word_indices)*add_loss_weight
-
+      dot_loss_weight = h.get('dot_loss_weight', 0)
+      if dot_loss_weight:
+        mse_loss = loss.clone()
+        logits = torch.matmul(outputs, embedding_matrix.T)
+        dot_loss = dot_entropy_loss_fn(logits, labels)*dot_loss_weight
+        loss+= dot_loss
+        
       loss.backward()
       optimizer.step()
       scheduler.step()
@@ -162,8 +182,12 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
         mt.Track('train', 'epoch', epoch)
 
         mt.Track('train', 'loss', Torch2Py(loss.detach()), 3)
-        if add_loss_weight:
-          mt.Track('train', 'index_loss', Torch2Py(loss.detach()))
+        if dot_loss_weight:
+          mt.Track('train', 'dot_xent_loss', Torch2Py(dot_loss.detach()))
+          mt.Track('train', 'mse_loss', Torch2Py(mse_loss.detach()))
+          dot_acc = dot_acc_fn(logits, labels)
+          mt.Track('train', 'dot_acc', Torch2Py(dot_acc.detach()))
+          
         mt.Track('train', 'lr_at_step', scheduler.get_last_lr()[0])
         mt.Track('train', 'us/ex', ns_per_example)
         mt.Track('train', '% cmplt', 100*global_step/tot_batches, -2)
@@ -263,12 +287,19 @@ class VocabDataset(torch.utils.data.Dataset):
       word_encodings.append(encoding)
 
     repeat_map = defaultdict(int)
-    for w in word_encodings:
+    valid_list = [1]*len(bert_vocab)
+    for i, w in enumerate(word_encodings):
       repeat_map[tuple(w)]+=1
-    valid_list = [1 if repeat_map[tuple(x)]<=1 else 0 for x in word_encodings]
+      if repeat_map[tuple(w)]>1:
+        valid_list[i] = 0
+
+    #ignore any words with duplicates (not using) keeping first instead (some very common words would be discarded otherwise)
+    #valid_list = [1 if repeat_map[tuple(x)]<=1 else 0 for x in word_encodings]
     word_char_encoding = torch.tensor(word_encodings, dtype=torch.int64)
     valid_list = torch.tensor(valid_list, dtype=torch.int64)
     word_char_encoding = word_char_encoding[torch.where(valid_list==1)]
+    with open('tmp_vocab.txt', 'w') as f:
+      f.write("\n".join([bert_vocab[i] for i in Torch2Py(torch.where(valid_list==1)[0])]))
 
     embeddings = bert_emb[torch.where(valid_list==1)]
     return {"word_char_encoding":word_char_encoding,
@@ -389,8 +420,21 @@ class LambdaLayer(nn.Module):
 def gelu(x):
   return 0.5 * x * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
+def PrintSize(self, input, output):
+  print(input[0].shape, "-->", output.shape)
+  print((input[0]!=output).sum())
+
+class PadLayer(nn.Module):
+  def __init__(self, pad_size, start_pad=0):
+    super(PadLayer, self).__init__()
+    self.pad_size = pad_size
+    self.start_pad = start_pad
+
+  def forward(self, x):
+    return F.pad(x, (self.start_pad, self.pad_size-self.start_pad))      
+
 class ConvSegment(nn.Module):
-  def __init__(self, input_channels, activation, kernel_filters_sizes):
+  def __init__(self, input_channels, activation, kernel_filters_sizes, center_start_pad=False):
     super(ConvSegment, self).__init__()
     if activation == 'relu':
       self.conv_activation = nn.ReLU()
@@ -402,11 +446,16 @@ class ConvSegment(nn.Module):
 
     self.convs = []
 
+    first_conv=True
     last_out_chan = input_channels
     for k, f in kernel_filters_sizes:
+      start_pad = k//2 if first_conv and center_start_pad else 0
+      self.convs.append(PadLayer(k-1, start_pad))
       self.convs.append(nn.Conv1d(last_out_chan, f, k))
       self.convs.append(self.conv_activation)
       last_out_chan = f
+      first_conv = False
+      
     self.convs = nn.Sequential(*self.convs)
 
   def forward(self, x):
@@ -455,22 +504,6 @@ class TokensToEmb(nn.Module):
 
   def forward_first_half(self, x):
     embeddings  = self.emb(x).permute(0,2,1)
-
-    # end of word attention heuristic
-    if self.end_of_word_weight:
-      pass # idk what this was dooin
-      # Hardcode attention
-      # bs = len(x)
-      # attn = torch.zeros(bs, self.sequence_len, device='cuda', requires_grad=False)
-      # attn[torch.arange(bs), eow] = 1.0
-      # attn = attn.unsqueeze(-1)
-
-      # Learn attention
-      # seg_attn_out = self.segment_attn(embeddings)
-      # self.end_word_pred = self.end_word_softmax(self.end_word_dense(seg_attn_out.flatten(-2)))
-
-      # embeddings_attn = torch.cat([embeddings, seg_attn_out.permute(0,2,1)], dim=-2)
-      # embeddings_attn = torch.cat([embeddings, attn.permute(0,2,1)], dim=-2)
 
     seg1_out = self.segment1(embeddings)
     return seg1_out

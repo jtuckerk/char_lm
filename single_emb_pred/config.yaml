@@ -4,10 +4,6 @@ char_to_idx_file: char_to_idx_map.pt
 embedding_file: distilbert_embedding_matrix.pt
 word_length: 18
 hyperparameters:
-  misspelling_rate:
-    - 0
-  misspelling_transforms:
-    - null  
   word_length:
     - 18
   char_vocab_size:
@@ -19,11 +15,11 @@ hyperparameters:
   seg1_type:
     - 'unfold'
   seg1.kernel_size:
-    - 5
+    - 18
   seg2.kernel|filter_sizes:
     -
-      - [5,768]
-      - [10,2048]  
+      - [1,2048]
+      - [1,2048]  
       - [1,2048]  
       - [1,2048]  
   token_embedding_size:
@@ -32,16 +28,19 @@ hyperparameters:
     - 512
   learning_rate:
     - .0001
+    - .00001
   loss_fn:
     - 'mse'
+  dot_loss_weight:
+    - .033
   eval_acc:
-    - False
+    - True
   optimizer:
     - 'adam'
   epochs:
-    - 200
+    - 20
   space_freq:
-    - 1
+    - .5
   lr_step_size:
     - 190700
   lr_decay:
@@ -51,7 +50,7 @@ hyperparameters:
   run_validation:
      - True
   random_seed:
-    - 3
+    - 4
   model_size_range_bytes:
     - [0, 1.1e+8]
   end_of_word_loss_weight:
@@ -59,8 +58,9 @@ hyperparameters:
   add_random_count:
     - 4
   misspelling_rate:
-    - .5
+    - 0
   misspelling_transforms:
-    - 1
+    - 0
   model_checkpoint:
-    - models/dec037524
+    - models/3f967df8e
+
