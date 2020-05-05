@@ -44,8 +44,18 @@ def top1_acc_fn(output, labels):
   right = top==labels
   return right.float().mean()
 
+def masked_acc_fn(output, labels, mask_indices):
+  batch_indices = torch.arange(len(mask_indices)).view(-1,1).expand(-1,mask_indices.size(-1))
+  labels = labels[batch_indices, mask_indices]
+  output = output[batch_indices, mask_indices, :]
+  
+  top = output.argmax(-1)
+  right = top==labels
+  return right.float().mean()
+
 def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
   cum_acc = 0
+  cum_mask_acc = 0  
   cum_xent_loss = 0
 
   correct_words = []
@@ -61,10 +71,16 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
 
       top1_acc = top1_acc_fn(outputs, labels)
       cum_acc += top1_acc
+      if h['output_type'] == 'all_tokens':
+        mask_indices = data['mask_idxs']
+        mask_acc = masked_acc_fn(outputs, labels, mask_indices)
+        cum_mask_acc += mask_acc
 
   steps = i+1
   metric_tracker.Track(val_type, 'global_step', global_step)
   metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_acc/steps))
+  if h['output_type'] == 'all_tokens':
+    metric_tracker.Track(val_type, 'mask_acc', Torch2Py(cum_mask_acc/steps))
   metric_tracker.Track(val_type, 'xent_loss', Torch2Py(cum_xent_loss.detach()/steps))
   
 def Train(train_loader, model, loss_fn, optimizer, h, mt):
@@ -120,6 +136,10 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
         ns_per_example = ((time.time()-start)/(h['batch_size']*(i+1)))*1e6
         accuracy = acc_fn(outputs, labels)
         mt.Track('train', 'accuracy', Torch2Py(accuracy))
+        if h['output_type'] == 'all_tokens':
+          mask_indices = data['mask_idxs']
+          mask_acc = masked_acc_fn(outputs, labels, mask_indices)
+          mt.Track('train', 'mask_acc', Torch2Py(mask_acc))
           
         mt.Track('train', 'global_step', global_step)
         mt.Track('train', 'epoch', epoch)        
@@ -154,11 +174,10 @@ class CharToTokEmbDataset(torch.utils.data.Dataset):
       }
     return item
 
-# instead of having the same # of output embeddings as the input this dataset
-# only has the output embedding(s) of the masked tokens
+# just for comparison
 class ClozeDataset(torch.utils.data.Dataset):
   # expects torch file to be a single token sequence of a preprocessed text dataset.
-  def __init__(self, torch_file, token_seq_length, num_masks=.1, device='cuda'):
+  def __init__(self, torch_file, token_seq_length, num_masks=3, device='cuda'):
     self.mask_idx = 103
     # lowercased  mask
     self.mask_chars = torch.tensor([34, 52, 40, 58, 50, 36]).long().to(device)
@@ -166,7 +185,6 @@ class ClozeDataset(torch.utils.data.Dataset):
     self.token_seq_length = token_seq_length
     self.data = torch.load(torch_file, map_location=device)
     sequences = len(self.data)//token_seq_length
-
     self.data = self.data[:sequences*token_seq_length].reshape(sequences,-1)
     self.device=device
 
@@ -174,12 +192,72 @@ class ClozeDataset(torch.utils.data.Dataset):
     return len(self.data)
 
   def __getitem__(self, idx):
-    i = self.data[idx].long().to(self.device)
+    i = self.data[idx].long()
     masked = i.clone()
-    perms = torch.randperm(self.token_seq_length)
+    perms = torch.randperm(self.token_seq_length).to(self.device)
     valid_perms = torch.where((masked[perms]!=0))[0] # where tok is not pad. fragile.
     mask = torch.sort(perms[valid_perms][:self.num_masks])[0]
     masked[mask] = self.mask_idx
+    item = {
+      'input_ids': masked,
+      'label_ids': i,
+      'mask_idxs': mask
+      }
+    return item
+
+  
+# instead of having the same # of output embeddings as the input this dataset
+# only has the output embedding(s) of the masked tokens
+class ClozeDatasetDense(torch.utils.data.Dataset):
+  # expects torch file to be a single token sequence of a preprocessed text dataset.
+  def __init__(self, torch_file, token_seq_length, num_masks=3, device='cuda'):
+    self.mask_idx = 103
+    # lowercased  mask
+    self.mask_chars = torch.tensor([34, 52, 40, 58, 50, 36]).long().to(device)
+    
+    self.num_masks = num_masks
+    self.token_seq_length = token_seq_length
+    self.data = torch.load(torch_file, map_location=device)
+    sequences = len(self.data)//(token_seq_length-1)
+    self.data = self.data[:sequences*(token_seq_length-1)].reshape(sequences,-1)
+    cls = torch.tensor([101,]).expand((len(self.data), 1)).short().to(device)
+
+    self.data = torch.cat([cls, self.data], 1)
+    self.device=device
+
+  def __len__(self):
+    return len(self.data)
+
+  def __getitem__(self, idx):
+    i = self.data[idx].long()
+    masked = i.clone()
+
+    if type(idx)==int:
+      perms = torch.randperm(self.token_seq_length)
+      valid_perms = torch.where((masked[perms]!=0) & (masked[perms]!=101))[0] # where tok is not [pad] or [cls]. fragile.
+      perms = perms[valid_perms][:self.num_masks]
+      cls_idx = torch.zeros((1,)).long()
+      perms = torch.cat([cls_idx, perms], 0)
+      mask = torch.sort(perms)[0]
+    else:
+      print("getting batch")
+      raise Exception("Not equivalent to the single item get. probably shouldn't use")
+      # TODO exclude padding from random choice for batch get
+      rand = torch.rand(masked.size(0), masked.size(-1))
+      perms = rand.argsort(dim=1)[:, :self.num_masks]
+      perms = (perms+1).clamp(max=self.token_seq_length-1)
+      perms = torch.sort(perms)[0]
+      
+      # include cls token as first target
+      #cls_idx = torch.zeros(len(perms), 1).long()
+      #perms = torch.cat([cls_idx, perms], 1)
+      #batch_indices = torch.arange(len(masked)).view(-1,1).expand(-1,self.num_masks+1)
+
+      batch_indices = torch.arange(len(masked)).view(-1,1).expand(-1,self.num_masks)
+      mask = (batch_indices, perms)
+
+    # getting a lil hacky
+    masked[mask[1:]] = self.mask_idx
     item = {
       'input_ids': masked,
       'label_ids': i[mask],
@@ -485,6 +563,7 @@ class Net(nn.Module):
     # takes in token ids or word embeddings.
     self.bert = DistilBertForMaskedLM.from_pretrained(h['bert_checkpoint'])
     self.input_type = h['input_type']
+    self.output_type = h['output_type']
     if h['input_type'] == 'token_encoded':
       self.token_encoded = True
       self.char_embedder = None
@@ -501,7 +580,8 @@ class Net(nn.Module):
   def forward(self, x):
     if self.input_type == 'token_encoded':
       word_logits = self.bert(input_ids=x)[0]
-      word_logits = word_logits[:, :self.num_masks, :]
+      if self.output_type=='only_masked':
+        word_logits = word_logits[:, :self.num_masks+1, :]
     elif self.input_type == 'char':
       embedded_chars = self.char_embedder(x)
       self.embedded_chars = embedded_chars.clone()
@@ -521,8 +601,11 @@ class Net(nn.Module):
   
 def InitDataset(exp_info, dev='cuda'):
   if exp_info['input_type'] == 'token_encoded':
-    ds =  ClozeDataset(exp_info['dataset'], exp_info['token_seq_length'], exp_info['num_masks'], device=dev)
-
+    if exp_info['output_type'] == 'only_masked':
+      ds =  ClozeDatasetDense(exp_info['dataset'], exp_info['token_seq_length'], exp_info['num_masks'], device=dev)
+    elif exp_info['output_type'] == 'all_tokens':
+      ds =  ClozeDataset(exp_info['dataset'], exp_info['token_seq_length'], exp_info['num_masks'], device=dev)
+      
   elif exp_info['input_type'] == 'char':
     ds = CharToTokEmbDataset(exp_info['dataset'], device=dev)
 
