@@ -143,3 +143,11 @@ single_word_pred/distilbert_embedding_matrix.pt
 single_word_pred/bert-base-uncased-vocab.txt
 single_emb_pred/experiment_runner.py
 
+*.pt
+experiment_client.py
+experiment_runner.py
+*.txt
+*.zip
+bert_distil*
+README.html
+__init__.py

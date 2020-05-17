@@ -10,6 +10,7 @@ import yaml
 from collections import defaultdict
 from torch.utils.checkpoint import checkpoint_sequential
 import torch.nn.functional as F
+import os
 
 # from Huggingface transformers. split out to make more portable.
 from modeling_distilbert import DistilBertForMaskedLM
@@ -54,12 +55,14 @@ def masked_acc_fn(output, labels, mask_indices):
   return right.float().mean()
 
 def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
+  device = next(model.parameters()).device
   cum_acc = 0
   cum_mask_acc = 0  
   cum_xent_loss = 0
 
   correct_words = []
   for i, data in enumerate(val_loader):
+    data = {k: d.to(device) for k,d in data.items()}
     inputs = data['input_ids']
     labels = data['label_ids']
 
@@ -71,7 +74,7 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
 
       top1_acc = top1_acc_fn(outputs, labels)
       cum_acc += top1_acc
-      if h['output_type'] == 'all_tokens':
+      if h.get('output_type', None) == 'all_tokens':
         mask_indices = data['mask_idxs']
         mask_acc = masked_acc_fn(outputs, labels, mask_indices)
         cum_mask_acc += mask_acc
@@ -79,12 +82,12 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
   steps = i+1
   metric_tracker.Track(val_type, 'global_step', global_step)
   metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_acc/steps))
-  if h['output_type'] == 'all_tokens':
+  if h.get('output_type', None) == 'all_tokens':
     metric_tracker.Track(val_type, 'mask_acc', Torch2Py(cum_mask_acc/steps))
   metric_tracker.Track(val_type, 'xent_loss', Torch2Py(cum_xent_loss.detach()/steps))
   
 def Train(train_loader, model, loss_fn, optimizer, h, mt):
-
+  device = next(model.parameters()).device
   n_batches = int(len(train_loader.dataset)/h['batch_size'])
 
   logging.info("TRAINING")
@@ -105,6 +108,7 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
       break
     thrash_rate = 100
     for i, data in enumerate(train_loader):
+      data = {k: d.to(device) for k,d in data.items()}
       global_step += 1
       inputs = data['input_ids']
       labels = data['label_ids']
@@ -136,7 +140,7 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
         ns_per_example = ((time.time()-start)/(h['batch_size']*(i+1)))*1e6
         accuracy = acc_fn(outputs, labels)
         mt.Track('train', 'accuracy', Torch2Py(accuracy))
-        if h['output_type'] == 'all_tokens':
+        if h.get('output_type', None) == 'all_tokens':
           mask_indices = data['mask_idxs']
           mask_acc = masked_acc_fn(outputs, labels, mask_indices)
           mt.Track('train', 'mask_acc', Torch2Py(mask_acc))
@@ -160,20 +164,62 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
   
   return not bad_loss, global_step
 
-class CharToTokEmbDataset(torch.utils.data.Dataset):
-  def __init__(self, torch_file, device='cuda'):
+class CharClozeToTokEmbDataset(torch.utils.data.Dataset):
+  def __init__(self, torch_file, num_masks=3, dense=True, device='cpu'):
     self.data = torch.load(torch_file, map_location=device)
-    
+    self.num_masks = num_masks
+    self.dense = dense
+    # char2idx1 TODO clean
+    #self.char_mask = torch.tensor([34,38,36]).char()
+    self.char_mask = torch.tensor([32,56,33]).char()    
+    self.beg = torch.tensor([0]).short()
+    self.end = torch.tensor([len(self.data['chars_encoded'][0])]).short()
   def __len__(self):
     return len(self.data['token_ids'])
 
   def __getitem__(self, idx):
+    if type(idx)!=int:
+      raise Exception("slices not supported")
+    original = self.data['chars_encoded'][idx]
+    tokens = self.data['token_ids'][idx]
+    offsets = self.data['token_start_offsets'][idx]
+    
+    num_toks = (tokens!=0).sum()
+
+    masked_chars, token_indices = self._mask_characters(original, offsets, num_toks)
+
+    if self.dense:
+      # include [cls] token in the output
+      token_indices = torch.cat([self.beg.long(), token_indices])
+      tokens = tokens[token_indices]
+      
     item = {
-      'input_ids': self.data['chars_encoded'][idx].long(),
-      'label_ids': self.data['token_ids'][idx].long() 
+      'input_ids': masked_chars.long(),
+      'label_ids': tokens.long(),
+      'mask_idxs': token_indices
       }
     return item
 
+  def _mask_characters(self, original, offsets, num_toks):
+    rand_toks = torch.randperm(num_toks)[:self.num_masks]
+    offsets = offsets[rand_toks]
+    sorted_offsets = torch.sort(offsets, 0)[0]
+    segments_to_keep = torch.cat([self.beg, sorted_offsets.view(-1), self.end], 0).view(-1,2)
+
+    slices = []
+
+    for start, end in segments_to_keep:
+      if slices:
+        slices.append(self.char_mask)
+      char_slice = original[start:end]
+      slices.append(char_slice)
+
+    masked_seq = torch.cat(slices, 0)
+    pad_size = max(0, len(original)-len(masked_seq))
+    pad = torch.tensor([0]).expand(pad_size).char()
+    masked_seq = torch.cat([masked_seq, pad], 0)[:len(original)]
+    return masked_seq, rand_toks
+  
 # just for comparison
 class ClozeDataset(torch.utils.data.Dataset):
   # expects torch file to be a single token sequence of a preprocessed text dataset.
@@ -272,15 +318,39 @@ class LambdaLayer(nn.Module):
     return self.lambd(x)
 
 class HardLeakyGradSigmoid(torch.autograd.Function):
+  @staticmethod
+  def forward(self,x):
+    self.leaky = (x < 0) | (x > 1)
+    return x.clamp(min=0.0, max=1.0)
+  @staticmethod
+  def backward(self,grad_output):
+    grad_input = grad_output.clone()
+    grad_input[self.leaky] *= 0.1
+        
+    return grad_input
+
+class StepWithSigmoidGrad(torch.autograd.Function):
     @staticmethod
     def forward(self,x):
-        self.leaky = (x < 0) | (x > 1)
-        return x.clamp(min=0.0, max=1.0)
+        self.x = x
+        return (x > 0).float()
+
+    @staticmethod
+    def backward(self,grad_output):
+        sig = torch.nn.Sigmoid()(self.x)
+        return sig*(1-sig)
+
+class StepWithHardGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(self,x):
+        self.high = (x>-.5) & (x<.5)
+        return (x > 0).float()
+
     @staticmethod
     def backward(self,grad_output):
         grad_input = grad_output.clone()
-        grad_input[self.leaky] *= 0.1
-        
+        grad_input[self.high] = 1
+        grad_input[~self.high] = 0
         return grad_input
 
 def hard_sigmoid(x):
@@ -288,6 +358,12 @@ def hard_sigmoid(x):
 
 def hard_leaky_grad_sigmoid(x):
     return HardLeakyGradSigmoid.apply(x)
+
+def step_with_sigmoid_grad(x):
+    return StepWithSigmoidGrad.apply(x)
+
+def step_with_hard_grad(x):
+    return StepWithHardGrad.apply(x)
   
 class LSTMSwitchboard(nn.Module):
   def __init__(self, out_size, layers, sigmoid_out=False):
@@ -501,6 +577,7 @@ class CharEmbedder(nn.Module):
 
     self.tokens_to_emb = TokensToEmb(h)
 
+
     self.char_input_window_size = h['seg1.kernel_size']
 
     self.manual_attn = h.get('manual_attention', False)
@@ -516,19 +593,20 @@ class CharEmbedder(nn.Module):
     
   def GetSwitchboard(self, attn):
     out = self.sb_module(attn)
-    self.switch_input = self.sb_module.switch_input
+    #self.switch_input = self.sb_module.switch_input
     return out
   
   def forward(self, x):
     # input character IDs as longs
 
     if self.manual_attn:
-      spaces = torch.where(x==1)
+      spaces = torch.where(x==1) # TODO fragile. Alls non alphanumerical characters in char2idxmap2
       act = torch.zeros_like(x)
 
       # TODO clean and include other special chars.
       act[spaces[0], torch.clamp(spaces[1]+1, max=act.shape[-1]-1)] = 1
-
+      special_chars = torch.where((x<32) & (x!=1))
+      act[special_chars] = 1
       act[torch.where(act==0)]=-1
       act[:, 0] = 1
       act*=100
@@ -563,11 +641,11 @@ class Net(nn.Module):
     # takes in token ids or word embeddings.
     self.bert = DistilBertForMaskedLM.from_pretrained(h['bert_checkpoint'])
     self.input_type = h['input_type']
-    self.output_type = h['output_type']
+    self.output_type = h.get('output_type', None)
     if h['input_type'] == 'token_encoded':
       self.token_encoded = True
       self.char_embedder = None
-    elif h['input_type'] == 'char':
+    elif h['input_type'] == 'char_masked':
       self.position_embeddings = h.get('position_embeddings', False)
       self.token_encoded = False
       self.char_embedder = CharEmbedder(h)
@@ -580,12 +658,10 @@ class Net(nn.Module):
   def forward(self, x):
     if self.input_type == 'token_encoded':
       word_logits = self.bert(input_ids=x)[0]
-      if self.output_type=='only_masked':
-        word_logits = word_logits[:, :self.num_masks+1, :]
-    elif self.input_type == 'char':
+    elif self.input_type == 'char_masked':
       embedded_chars = self.char_embedder(x)
       self.embedded_chars = embedded_chars.clone()
-      self.switch_input = self.char_embedder.switch_input
+      #self.switch_input = self.char_embedder.switch_input
       if self.skip_bert:
         word_logits = embedded_chars@self.bert.distilbert.embeddings.word_embeddings.weight.data.T  # (bs, seq_length, vocab_size)
       else:
@@ -593,21 +669,25 @@ class Net(nn.Module):
           seq_length = embedded_chars.size(1)
           position_ids = torch.arange(seq_length, dtype=torch.long, device=embedded_chars.device)  # (max_seq_length)
           position_ids = position_ids.unsqueeze(0).expand(embedded_chars.size()[:2])  # (bs, max_seq_length)
-          embedded_chars += self.position_embeddings(position_ids)
-          
+          embedded_chars += self.position_embeddings(position_ids)          
         word_logits = self.bert(inputs_embeds=embedded_chars)[0]
 
+    if self.output_type == 'only_masked':
+      word_logits = word_logits[:, :self.num_masks+1, :]
     return word_logits
   
 def InitDataset(exp_info, dev='cuda'):
   if exp_info['input_type'] == 'token_encoded':
     if exp_info['output_type'] == 'only_masked':
-      ds =  ClozeDatasetDense(exp_info['dataset'], exp_info['token_seq_length'], exp_info['num_masks'], device=dev)
+      ds =  ClozeDatasetDense(exp_info['dataset'], exp_info['token_seq_length'], exp_info['num_masks'], device='cpu')
     elif exp_info['output_type'] == 'all_tokens':
-      ds =  ClozeDataset(exp_info['dataset'], exp_info['token_seq_length'], exp_info['num_masks'], device=dev)
+      ds =  ClozeDataset(exp_info['dataset'], exp_info['token_seq_length'], exp_info['num_masks'], device='cpu')
       
-  elif exp_info['input_type'] == 'char':
-    ds = CharToTokEmbDataset(exp_info['dataset'], device=dev)
+  elif exp_info['input_type'] == 'char_masked':
+    ds = CharClozeToTokEmbDataset(exp_info['dataset'],
+                                  exp_info['num_masks'],
+                                  exp_info['output_type'] == 'only_masked',
+                                  device='cpu')
 
   tr, va = exp_info['dataset_split'] # the rest is test
   n_train_examples, n_val_examples = int(len(ds)*tr), int(len(ds)*va)
@@ -641,8 +721,8 @@ def RunOne(h, model, data, mt, dev='cuda'):
   if 'seed' in h:
     torch.manual_seed(h['seed'])
 
-  train_loader = DataLoader(train_d, batch_size=h['batch_size'], shuffle=True)
-  validation_loader = DataLoader(val_d, batch_size=h['batch_size'], shuffle=False)
+  train_loader = DataLoader(train_d, batch_size=h['batch_size'], shuffle=True, num_workers=os.cpu_count())
+  validation_loader = DataLoader(val_d, batch_size=h['batch_size'], shuffle=False, num_workers=os.cpu_count())
   logging.debug("n_train_batches: %s" % (len(train_loader.dataset)//h['batch_size']))
 
   logging.info("Experiment Model:\n" + "(bert)\n"+str(model.char_embedder))
@@ -668,6 +748,14 @@ def RunOne(h, model, data, mt, dev='cuda'):
     for param in model.bert.parameters():
       param.requires_grad = False
 
+  if 'vocab_transform' in h['freeze_modules']:
+    for param in model.bert.vocab_transform.parameters():
+      param.requires_grad = False
+
+  if 'vocab_projector' in h['freeze_modules']:
+    for param in model.bert.vocab_projector.parameters():
+      param.requires_grad = False
+      
   for m in h['freeze_modules']:
     if 'bert.' in m:
       m = m.replace('bert.', 'bert.distilbert.')

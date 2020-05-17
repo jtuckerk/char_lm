@@ -1,17 +1,37 @@
-experiment_name: testing_bert_tok_to_dense_tok
-dataset: 'text8_dist_tok_encoded_train.pt'
-dataset_split: [.9, .06]
-input_type: token_encoded
+experiment_name: testing_bert_charcloze_to_dense_tok
+dataset: 'imdb_tok96_char_encoded384charidx2.pt'
+dataset_split: [.3, .06]
+input_type: char_masked
 output_type: only_masked
 token_seq_length: 96
 num_masks: 6
 hyperparameters:
-  input_type: token_encoded
+  input_type: char_masked
   output_type: only_masked
   token_seq_length: 96
+  char_vocab_size: [70]
+  char_embedding_size: [8]
+  conv_activation:
+    - 'relu'
+  seg1_type:
+    - 'unfold'
+  seg1.kernel_size:
+    - 18
+  seg2.kernel|filter_sizes:
+    -
+      - [1,2048]
+      - [1,2048]
+      - [1,2048]
+      - [1,2048]
+  token_embedding_size:
+    - 768
+  switchboard_type:
+    - rule_based
+  sb.sigmoid:
+    - hard
   num_masks: 6
   batch_size:
-    - 32
+    - 64
   learning_rate:
     - .0001
   loss_fn:
@@ -27,12 +47,20 @@ hyperparameters:
   seed:
     - 0
   bert_checkpoint:
-    - bert_distil_uncased
+    - bert_distil_dense_out
   skip_bert:
     - False
+  position_embeddings:
+    - True
+  manual_attention:
+    - True
   space_loss_weight:
     - 0
-  freeze_modules:  
-    - []
-  note:
-    - adding_mask
+  freeze_modules:
+    - [bert.transformer.layer.1,
+       bert.transformer.layer.2,
+       bert.transformer.layer.3,
+       bert.transformer.layer.4,
+       bert.transformer.layer.5]
+  model_checkpoint:
+    - models/d3aa9f852

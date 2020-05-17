@@ -1,6 +1,6 @@
 experiment_name: single_embedding_prediction
-vocab_file: bert-base-uncased-vocab.txt
-char_to_idx_file: char_to_idx_map.pt
+vocab_file: bert-base-uncased-vocab-modmask.txt
+char_to_idx_file: char_to_idx_map2.pt
 embedding_file: distilbert_embedding_matrix.pt
 word_length: 18
 hyperparameters:
@@ -25,20 +25,19 @@ hyperparameters:
   token_embedding_size:
     - 768
   batch_size:
-    - 512
+    - 256
   learning_rate:
-    - .0001
     - .00001
   loss_fn:
-    - 'mse'
+    - 'vmf_simplified_neg_sample_reg1'
   dot_loss_weight:
-    - .033
+    - .00
   eval_acc:
     - True
   optimizer:
     - 'adam'
   epochs:
-    - 20
+    - 100
   space_freq:
     - .5
   lr_step_size:
@@ -50,7 +49,7 @@ hyperparameters:
   run_validation:
      - True
   random_seed:
-    - 4
+    - 8
   model_size_range_bytes:
     - [0, 1.1e+8]
   end_of_word_loss_weight:
@@ -61,6 +60,3 @@ hyperparameters:
     - 0
   misspelling_transforms:
     - 0
-  model_checkpoint:
-    - models/3f967df8e
-

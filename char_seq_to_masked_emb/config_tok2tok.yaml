@@ -1,0 +1,51 @@
+experiment_name: testing_bert_tok_to_dense_tok
+dataset: 'text8_dist_tok_encoded_train.pt'
+dataset_split: [.9, .06]
+input_type: token_encoded
+output_type: only_masked
+token_seq_length: 96
+num_masks: 6
+hyperparameters:
+  input_type: token_encoded
+  output_type: only_masked
+  token_seq_length: 96
+  num_masks: 6
+  batch_size:
+    - 32
+  learning_rate:
+    - .0001
+  loss_fn:
+    - 'xentropy'
+  optimizer:
+    - 'adam'  
+  epochs:
+    - 0
+  lr_step_size:
+    - 1000
+  run_validation:
+     - True
+  seed:
+    - 0
+  bert_checkpoint:
+    - bert_distil_dense_out
+  skip_bert:
+    - False
+  position_embeddings: True
+  space_loss_weight:
+    - 0
+  freeze_modules:
+    - []
+  #   - [bert.embeddings,
+  #      bert.transformer.layer.0,
+  #      bert.transformer.layer.1,
+  #      bert.transformer.layer.2,
+  #      bert.transformer.layer.3,
+  #      bert.transformer.layer.4,
+  #      vocab_transform,
+  #      vocab_projector,]
+  #   - [bert.embeddings,
+  #      vocab_transform,
+  #      vocab_projector,]
+  
+  seed:
+    - 3

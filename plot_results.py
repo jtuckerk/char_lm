@@ -13,6 +13,28 @@ def GetFlatInfoResults(exp, hashes):
   flat.update(GetHyperParams(exp, hashes))
   return flat
 
+EXPAND_LISTS=False
+def IncludeLists(list_names, expanded_dict, name, hp_list):
+  list_names.append(name)
+  names = [name]
+  pref = False
+  if '.' in name:
+    pre, name = name.split(".")
+    pref = True
+  if "|" in name:
+    names = name.split("|")
+    if pref:
+      names = [pre+"."+n for n in names]
+  count = 1
+  if not EXPAND_LISTS:
+    # just include the number of list elements to keep the graphs from getting cluttered
+    expanded_dict[name] = len(hp_list)
+  else:
+    for val in hp_list:
+      for i, name in enumerate(names):
+        expanded_dict[name+str(count)] = val[i] if len(names)>1 else val
+      count+=1
+
 def GetHyperParams(results, seen_hashes):
   h = copy.deepcopy(results['exp_info']['hyperparameters'])
   lists = []
@@ -24,26 +46,12 @@ def GetHyperParams(results, seen_hashes):
   if cp and cp.split('/')[-1] in seen_hashes:
     expanded['from_uid'] = cp.split('/')[-1]
 
-  # Expand hyperparams with lists
+  # Deal with hyperparams other than ints/floats
   for k, v in h.items():
     if type(v)== bool:
       h[k] = int(v)
     elif type(v) == list:
-      lists.append(k)
-      names = [k]
-      pref = False
-      if '.' in k:
-        pre, k = k.split(".")
-        pref = True
-      if "|" in k:
-        names = k.split("|")
-        if pref:
-          names = [pre+"."+n for n in names]
-      count = 1
-      for val in v:
-        for i, name in enumerate(names):
-          expanded[name+str(count)] = val[i] if len(names)>1 else val
-        count+=1
+      IncludeLists(lists, expanded, k, v)
   for l in lists:
     del h[l]
   h.update(expanded)

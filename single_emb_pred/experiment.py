@@ -12,13 +12,6 @@ import os
 import math
 import torch.nn.functional as F
 
-level = logging.getLevelName("INFO")
-logging.basicConfig(
-  level=level,
-  format="[%(asctime)s] %(message)s",
-  datefmt="%H:%M:%S",
-)
-
 # TODO
 # nearest neighbor acc optimization
 # end of word location helper loss
@@ -30,6 +23,35 @@ MSE = nn.MSELoss()
 
 def mse_loss_fn(outputs, labels, embedding_matrix):
   return MSE(outputs, embedding_matrix[labels])
+
+def squared_mse_loss_fn(outputs, labels, embedding_matrix):
+  return torch.sqrt(MSE(outputs, embedding_matrix[labels]))
+
+# simplified version of https://arxiv.org/pdf/1812.04616.pdf -- no bessel func, no regularization terms
+def vmf_simp_loss(out, labels, embedding_matrix):
+  targets = embedding_matrix[labels]
+  normalization_const = out.norm(dim=-1)
+  # batchwise matrix multiply
+  likelihood = out.unsqueeze(1)@targets.view(-1,targets.shape[-1], 1)
+  return (-torch.log(normalization_const) - likelihood.squeeze()).mean()
+
+def vmf_simp_loss_neg_sample(out, labels, embedding_matrix):
+  targets = embedding_matrix[labels]
+  negative_examples = embedding_matrix[torch.randperm(len(embedding_matrix))[:len(labels)]]
+  normalization_const = out.norm(dim=-1)
+  # batchwise matrix multiply
+  likelihood = out.unsqueeze(1)@targets.view(-1,targets.shape[-1], 1)
+  neg_likelihood = out.unsqueeze(1)@negative_examples.view(-1,targets.shape[-1], 1)
+  return (-torch.log(normalization_const)+neg_likelihood.squeeze() - likelihood.squeeze()).mean()
+
+def vmf_simp_loss_neg_sample_reg1(out, labels, embedding_matrix):
+  targets = embedding_matrix[labels]
+  negative_examples = embedding_matrix[torch.randperm(len(embedding_matrix))[:len(labels)]]
+  normalization_const = out.norm(dim=-1)
+  # batchwise matrix multiply
+  likelihood = out.unsqueeze(1)@targets.view(-1,targets.shape[-1], 1)
+  neg_likelihood = out.unsqueeze(1)@negative_examples.view(-1,targets.shape[-1], 1)
+  return (-torch.log(normalization_const)+neg_likelihood.squeeze() - likelihood.squeeze() + normalization_const).mean()
 
 # not actually fast... can run on colab GPU with lots of mem but doesn't speed up much
 def mse_entropy_fast(outputs, labels, embedding_matrix):
@@ -49,7 +71,7 @@ def dot_entropy_loss_fn(logits, labels):
   loss = xent_loss(logits, labels)
   return loss
 
-def dot_acc_fn(logits, labels):
+def dot_acc_fn(logits, labels, emb):
   top = logits.argmax(-1)
   right = top==labels
   return right.float().mean()
@@ -87,6 +109,7 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
 
   cum_nearest_neighbor_acc = 0
   cum_mse_loss = 0
+  cum_vmf_loss = 0  
   cum_dot_acc = 0
   cum_dot_xent_loss = 0
 
@@ -101,6 +124,7 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
 
     with torch.no_grad():
       outputs = model(inputs)
+      cum_vmf_loss += vmf_simp_loss(outputs, labels, embedding_matrix)
       mse_loss = mse_loss_fn(outputs, labels, embedding_matrix)
       logits = torch.matmul(outputs, embedding_matrix.T)
       cum_dot_xent_loss += dot_entropy_loss_fn(logits, labels)
@@ -109,13 +133,14 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
       if h.get('eval_acc', False):
         nearest_neighbor_acc = nearest_neighbor_acc_fn(outputs, labels, embedding_matrix)
         cum_nearest_neighbor_acc += nearest_neighbor_acc
-        cum_dot_acc += dot_acc_fn(logits, labels)
+        cum_dot_acc += dot_acc_fn(logits, labels, embedding_matrix)
 
   steps = i+1
   metric_tracker.Track(val_type, 'global_step', global_step)
   if h.get('eval_acc', False):
     metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_nearest_neighbor_acc/steps))
     metric_tracker.Track(val_type, 'dot_acc', Torch2Py(cum_dot_acc/steps))
+  metric_tracker.Track(val_type, 'vmf_simp_loss', Torch2Py(cum_vmf_loss.detach()/steps))
   metric_tracker.Track(val_type, 'mse_loss', Torch2Py(cum_mse_loss.detach()/steps))
   metric_tracker.Track(val_type, 'dot_xent_loss', Torch2Py(cum_dot_xent_loss.detach()/steps))
 
@@ -178,19 +203,26 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
           accuracy = acc_fn(outputs, labels, embedding_matrix)
           mt.Track('train', 'accuracy', Torch2Py(accuracy))
 
-        mt.Track('train', 'global_step', global_step)
+        mt.Track('train', 'gl_step', global_step)
         mt.Track('train', 'epoch', epoch)
 
         mt.Track('train', 'loss', Torch2Py(loss.detach()), 3)
         if dot_loss_weight:
           mt.Track('train', 'dot_xent_loss', Torch2Py(dot_loss.detach()))
           mt.Track('train', 'mse_loss', Torch2Py(mse_loss.detach()))
-          dot_acc = dot_acc_fn(logits, labels)
+          dot_acc = dot_acc_fn(logits, labels, embedding_matrix)
           mt.Track('train', 'dot_acc', Torch2Py(dot_acc.detach()))
           
-        mt.Track('train', 'lr_at_step', scheduler.get_last_lr()[0])
+        mt.Track('train', 'lr', scheduler.get_last_lr()[0], 4)
         mt.Track('train', 'us/ex', ns_per_example)
-        mt.Track('train', '% cmplt', 100*global_step/tot_batches, -2)
+        mt.Track('train', '% cmplt', 100*global_step/tot_batches, -1)
+        # track the norm of the gradients over time
+        for name, w in model.named_parameters():
+          if 'weight' in name:
+            name = name.split('.')[1:][-3:-1]
+            name = ".".join(name)
+            name = name + " "*(6-len(name))
+            mt.Track('train', name, w.grad.norm().item())
         mt.Log('train')
 
       if loss.item() > 1000 or torch.isnan(loss):
@@ -602,6 +634,14 @@ def RunOne(h, model, data, mt, dev='cuda'):
     optimizer = optim.Adam(model.parameters(), lr=h['learning_rate'])
   if h['loss_fn'] == 'mse':
     loss_fn = mse_loss_fn
+  if h['loss_fn'] == 'squared_mse':
+    loss_fn = squared_mse_loss_fn
+  if h['loss_fn'] == 'vmf_simplified':
+    loss_fn = vmf_simp_loss
+  if h['loss_fn'] == 'vmf_simplified_neg_sample':
+    loss_fn = vmf_simp_loss_neg_sample
+  if h['loss_fn'] == 'vmf_simplified_neg_sample_reg1':
+    loss_fn = vmf_simp_loss_neg_sample_reg1
 
   success, step = Train(train_loader,
         model, loss_fn, optimizer, h, mt)
