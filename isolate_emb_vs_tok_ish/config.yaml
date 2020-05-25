@@ -1,0 +1,67 @@
+experiment_name: testing_bert_char_to_tok
+dataset: 'text8_dist_tok_encoded_train.pt'
+token_seq_length: 96
+word_length: 18
+vocab_file: bert-base-uncased-vocab-modmask.txt
+char_to_idx_file: char_to_idx_map2.pt
+dataset_split: [.9, .1]
+input_type: tokenized_chars
+percent_masks: .1
+hyperparameters:
+  token_seq_length: 96
+  word_length: 18
+  char_vocab_size: [70]
+  char_embedding_size: [8]
+  conv_activation:
+    - 'relu'
+  switchboard_activation:
+    - 'sigmoid'
+  seg1_type:
+    - 'unfold'
+  seg1.kernel_size:
+    - 18
+  seg2.kernel|filter_sizes:
+    -
+      - [1,256]
+      - [1,1024]
+      - [1,12288]
+  token_embedding_size:
+    - 768
+  switchboard_type:
+    - rule_based
+  batch_size:
+    - 32
+  learning_rate:
+    - 0.0000333
+  loss_fn:
+    - 'xentropy'
+  optimizer:
+    - 'adam'  
+  epochs:
+    - 1
+  lr_step_size:
+    - 1000
+  run_validation:
+     - True
+  seed:
+    - 0
+  input_type:
+    - tokenized_chars
+  sb.sigmoid:
+    - standard
+  bert_checkpoint:
+    - bert_distil_uncased
+  manual_attention:
+    - True
+  position_embeddings:
+    - True
+  skip_bert:
+    - False
+  space_loss_weight:
+    - 0
+  freeze_modules:  
+    - [bert]
+  model_checkpoint:
+    - models/3300e8546
+  note:
+    - bertLN
