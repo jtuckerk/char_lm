@@ -7,6 +7,8 @@ char_to_idx_file: char_to_idx_map2.pt
 dataset_split: [.9, .1]
 input_type: tokenized_chars
 percent_masks: .1
+add_random_count: 3
+space_frequency: .5
 hyperparameters:
   token_seq_length: 96
   word_length: 18
@@ -20,11 +22,11 @@ hyperparameters:
     - 'unfold'
   seg1.kernel_size:
     - 18
-  seg2.kernel|filter_sizes:
-    -
-      - [1,256]
-      - [1,1024]
-      - [1,12288]
+  # seg2.kernel|filter_sizes:
+  #   -
+  #     - [1,256]
+  #     - [1,1024]
+  #     - [1,12288]
   token_embedding_size:
     - 768
   switchboard_type:
@@ -38,7 +40,7 @@ hyperparameters:
   optimizer:
     - 'adam'  
   epochs:
-    - 1
+    - 0
   lr_step_size:
     - 1000
   run_validation:
@@ -62,6 +64,19 @@ hyperparameters:
   freeze_modules:  
     - [bert]
   model_checkpoint:
-    - models/3300e8546
-  note:
-    - bertLN
+    - models/epe8d7a0155
+    - models/ep82e0468a4
+    - models/ep0c478f576
+    - models/ep95d7b74c4
+    - models/ep4acb058a5
+    - models/ep10012ffe2
+    - models/ep5023ef12a
+    - models/epe2d80a508
+    - models/ep8822634bc
+    - models/epef800feb9
+    - models/epf73ae6dd5
+    - models/ep3683c34d6
+    - models/epc6ce592a5
+    - models/ep3ad077b9d
+    - models/epe53f03d12
+    - models/epd361791ef

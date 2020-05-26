@@ -10,6 +10,7 @@ import yaml
 from collections import defaultdict
 from torch.utils.checkpoint import checkpoint_sequential
 import torch.nn.functional as F
+import os
 
 # from Huggingface transformers. split out to make more portable.
 from modeling_distilbert import DistilBertForMaskedLM
@@ -37,9 +38,10 @@ def top1_acc_fn(output, labels):
 def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
   cum_acc = 0
   cum_xent_loss = 0
-
+  device = next(model.parameters()).device
   correct_words = []
   for i, data in enumerate(val_loader):
+    data = {k: d.to(device) for k,d in data.items()}
     inputs = data['input_ids']
     labels = data['label_ids']
 
@@ -59,6 +61,7 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
   
 def Train(train_loader, model, loss_fn, optimizer, h, mt):
 
+  device = next(model.parameters()).device
   n_batches = int(len(train_loader.dataset)/h['batch_size'])
 
   logging.info("TRAINING")
@@ -79,6 +82,7 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
       break
     thrash_rate = 100
     for i, data in enumerate(train_loader):
+      data = {k: d.to(device) for k,d in data.items()}
       global_step += 1
       inputs = data['input_ids']
       labels = data['label_ids']
@@ -176,10 +180,12 @@ class ClozeDataset(torch.utils.data.Dataset):
 class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
   # expects torch file to be a single token sequence of a preprocessed text dataset.
   def __init__(self, torch_file, token_seq_length, vocab_file,
-               char_to_idx_file, word_length, percent_masks=.1, device='cuda'):
+               char_to_idx_file, word_length, percent_masks=.1, add_random_count=0, space_freq=1, device='cuda'):
     self.mask_idx = 103
     
     self.percent_masks = percent_masks
+    self.add_random_count = add_random_count
+    self.space_freq = space_freq
     self.data = torch.load(torch_file, map_location=device)
     self.data = self.data.to(device)
     sequences = len(self.data)//token_seq_length
@@ -229,12 +235,52 @@ class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
     mask = torch.rand(size=masked.size())
     mask = torch.where(mask<self.percent_masks)
     masked[mask] = self.mask_idx
+
     item = {
       'label_ids': i,
-      'input_ids': self.word_char_encoding[masked],
       'token_ids': masked
       }
+    char_encoded_input = self.word_char_encoding[masked]
+    end = self.end_of_word(char_encoded_input)
+    item['end_of_word_index'] = end
+    if torch.rand(size=())<.9: # skip 1/10th of the time
+      for i in range(self.add_random_count):
+        char_encoded_input =self.add_random_next_word(char_encoded_input, end)
+        end = self.end_of_word(char_encoded_input)
+
+    item['input_ids'] = char_encoded_input
+
     return item
+  def end_of_word(self, char_encoded_input):
+    chars = char_encoded_input!=0
+    return chars.sum(-1)
+
+  def append_single(self, char_encoded_input, add_word, end):
+    c_len = len(char_encoded_input)
+    if torch.rand(size=())>=self.space_freq:
+      end = torch.clamp(end, max=c_len-1)
+      char_encoded_input[end:] = self.word_char_encoding[add_word][:c_len-end]
+    else:
+      char_encoded_input[end:end+1] = self.char_to_idx_map[' '] # space char
+      end = torch.clamp(end, max=c_len-1)
+      char_encoded_input[end+1:] = self.word_char_encoding[add_word][:c_len-end-1]
+    return char_encoded_input
+      
+  def add_random_next_word(self, char_encoded_input, end):
+    # returns the word with a random word added at the end of the word
+    char_encoded_input = char_encoded_input.clone()
+    if len(char_encoded_input.size())>=2:
+      add_word = torch.randint(0, len(self.word_char_encoding), (len(char_encoded_input),))
+      new_words=[]
+      for i, single_encoded in enumerate(char_encoded_input):
+        new_words.append(self.append_single(single_encoded, add_word[i], end[i]))
+      char_encoded_input = torch.stack(new_words)
+    else:
+      add_word = torch.randint(0, len(self.word_char_encoding), ())
+      char_encoded_input = self.append_single(char_encoded_input, add_word, end)
+
+    return char_encoded_input
+
 
 class LambdaLayer(nn.Module):
   def __init__(self, lambd):
@@ -623,7 +669,9 @@ def InitDataset(exp_info, dev='cuda'):
                                  exp_info['char_to_idx_file'],
                                  exp_info['word_length'],
                                  exp_info['percent_masks'],
-                                 device=dev)
+                                 exp_info['add_random_count'],
+                                 exp_info['space_frequency'],
+                                 device='cpu')
 
   tr, va = exp_info['dataset_split'] # the rest is test
   n_train_examples, n_val_examples = int(len(ds)*tr), int(len(ds)*va)
@@ -636,6 +684,14 @@ def InitDataset(exp_info, dev='cuda'):
   return train_d, val_d, test_d
 
 def CreateModel(h):
+  if 'seg2.kernel|filter_sizes' not in h:
+    # find the emb_pred model shape from the emb_pred exp
+    exphash = h['model_checkpoint'].split('/')[-1]
+    fname = 'emb_pred_results/' + exphash
+    with open(fname) as f:
+      results = yaml.safe_load(f.read())
+      sizes = results['exp_info']['hyperparameters']['seg2.kernel|filter_sizes']
+      h['seg2.kernel|filter_sizes'] = sizes
   model = Net(h)
   return model
 
@@ -657,8 +713,8 @@ def RunOne(h, model, data, mt, dev='cuda'):
   if 'seed' in h:
     torch.manual_seed(h['seed'])
 
-  train_loader = DataLoader(train_d, batch_size=h['batch_size'], shuffle=True)
-  validation_loader = DataLoader(val_d, batch_size=h['batch_size'], shuffle=False)
+  train_loader = DataLoader(train_d, batch_size=h['batch_size'], shuffle=True, num_workers=os.cpu_count())
+  validation_loader = DataLoader(val_d, batch_size=h['batch_size'], shuffle=False, num_workers=os.cpu_count())
   logging.debug("n_train_batches: %s" % (len(train_loader.dataset)//h['batch_size']))
 
   char_str = ""
