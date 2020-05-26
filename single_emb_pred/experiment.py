@@ -14,10 +14,6 @@ import torch.nn.functional as F
 
 # TODO
 # nearest neighbor acc optimization
-# end of word location helper loss
-# adding droput?
-# try out gelu activation
-
 
 MSE = nn.MSELoss()
 
@@ -34,6 +30,24 @@ def vmf_simp_loss(out, labels, embedding_matrix):
   # batchwise matrix multiply
   likelihood = out.unsqueeze(1)@targets.view(-1,targets.shape[-1], 1)
   return (-torch.log(normalization_const) - likelihood.squeeze()).mean()
+
+def cos_loss(out, labels, embedding_matrix):
+  targets = embedding_matrix[labels]
+  pred_normalize = out.norm(dim=-1)
+  target_normalize = targets.norm(dim=-1)
+  # batchwise matrix multiply
+  inner_prod = out.unsqueeze(1)@targets.view(-1,targets.shape[-1], 1)
+  normed = inner_prod.squeeze()/(pred_normalize*target_normalize)
+  return (-1*normed).mean()
+
+def exp_cos_loss(out, labels, embedding_matrix):
+  targets = embedding_matrix[labels]
+  pred_normalize = out.norm(dim=-1)
+  target_normalize = targets.norm(dim=-1)
+  # batchwise matrix multiply
+  inner_prod = out.unsqueeze(1)@targets.view(-1,targets.shape[-1], 1)
+  normed = inner_prod.squeeze()/(pred_normalize*target_normalize)
+  return (-1*torch.exp(normed)).mean()
 
 def vmf_simp_loss_neg_sample(out, labels, embedding_matrix):
   targets = embedding_matrix[labels]
@@ -76,6 +90,17 @@ def dot_acc_fn(logits, labels, emb):
   right = top==labels
   return right.float().mean()
 
+def cosine_similarity_acc_fn(outputs, labels, embedding_matrix):
+  out_norm = outputs.norm(dim=-1)
+  emb_norm = embedding_matrix.norm(dim=-1)
+  inner_prods = outputs@embedding_matrix.T
+  n1 = inner_prods/out_norm.unsqueeze(1)
+  n2 = n1/emb_norm
+
+  preds = n2.argmax(-1)
+  right = labels==preds
+  return right.float().mean()
+
 def nearest_neighbor_acc_fn(outputs, labels, embedding_matrix):
   # overflows memory
   # emb_mat =embedding_matrix.unsqueeze(1).expand(-1,len(outputs),-1)
@@ -109,8 +134,10 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
 
   cum_nearest_neighbor_acc = 0
   cum_mse_loss = 0
+  cum_cos_loss = 0
   cum_vmf_loss = 0  
   cum_dot_acc = 0
+  cum_cos_acc = 0  
   cum_dot_xent_loss = 0
 
   embedding_matrix = val_loader.embedding_matrix
@@ -126,6 +153,7 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
       outputs = model(inputs)
       cum_vmf_loss += vmf_simp_loss(outputs, labels, embedding_matrix)
       mse_loss = mse_loss_fn(outputs, labels, embedding_matrix)
+      cum_cos_loss += cos_loss(outputs, labels, embedding_matrix)      
       logits = torch.matmul(outputs, embedding_matrix.T)
       cum_dot_xent_loss += dot_entropy_loss_fn(logits, labels)
       cum_mse_loss += mse_loss
@@ -134,14 +162,17 @@ def Validate(val_loader, model, global_step, h, metric_tracker, val_type):
         nearest_neighbor_acc = nearest_neighbor_acc_fn(outputs, labels, embedding_matrix)
         cum_nearest_neighbor_acc += nearest_neighbor_acc
         cum_dot_acc += dot_acc_fn(logits, labels, embedding_matrix)
+        cum_cos_acc += cosine_similarity_acc_fn(outputs, labels, embedding_matrix)
 
   steps = i+1
   metric_tracker.Track(val_type, 'global_step', global_step)
   if h.get('eval_acc', False):
     metric_tracker.Track(val_type, 'accuracy', Torch2Py(cum_nearest_neighbor_acc/steps))
     metric_tracker.Track(val_type, 'dot_acc', Torch2Py(cum_dot_acc/steps))
+    metric_tracker.Track(val_type, 'cos_acc', Torch2Py(cum_cos_acc/steps))
   metric_tracker.Track(val_type, 'vmf_simp_loss', Torch2Py(cum_vmf_loss.detach()/steps))
   metric_tracker.Track(val_type, 'mse_loss', Torch2Py(cum_mse_loss.detach()/steps))
+  metric_tracker.Track(val_type, 'cos_loss', Torch2Py(cum_cos_loss.detach()/steps))
   metric_tracker.Track(val_type, 'dot_xent_loss', Torch2Py(cum_dot_xent_loss.detach()/steps))
 
 def Train(train_loader, model, loss_fn, optimizer, h, mt):
@@ -182,9 +213,13 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
 
       loss = loss_fn(outputs, labels, embedding_matrix)
 
+      mse_loss_weight = h.get('mse_loss_weight', 0)
+      if mse_loss_weight:
+        main_loss = loss.clone()
+        mse_loss = mse_loss_fn(outputs, labels, embedding_matrix)*mse_loss_weight
+        loss+= mse_loss
       dot_loss_weight = h.get('dot_loss_weight', 0)
       if dot_loss_weight:
-        mse_loss = loss.clone()
         logits = torch.matmul(outputs, embedding_matrix.T)
         dot_loss = dot_entropy_loss_fn(logits, labels)*dot_loss_weight
         loss+= dot_loss
@@ -207,22 +242,24 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
         mt.Track('train', 'epoch', epoch)
 
         mt.Track('train', 'loss', Torch2Py(loss.detach()), 3)
-        if dot_loss_weight:
-          mt.Track('train', 'dot_xent_loss', Torch2Py(dot_loss.detach()))
+        if mse_loss_weight:
           mt.Track('train', 'mse_loss', Torch2Py(mse_loss.detach()))
+          mt.Track('train', 'main_loss', Torch2Py(main_loss.detach()))
+        if dot_loss_weight:
           dot_acc = dot_acc_fn(logits, labels, embedding_matrix)
-          mt.Track('train', 'dot_acc', Torch2Py(dot_acc.detach()))
+          mt.Track('train', 'dot_loss', Torch2Py(dot_loss.detach()))     
+          mt.Track('train', 'dot_acc', Torch2Py(dot_acc.detach()))     
           
         mt.Track('train', 'lr', scheduler.get_last_lr()[0], 4)
         mt.Track('train', 'us/ex', ns_per_example)
         mt.Track('train', '% cmplt', 100*global_step/tot_batches, -1)
         # track the norm of the gradients over time
-        for name, w in model.named_parameters():
-          if 'weight' in name:
-            name = name.split('.')[1:][-3:-1]
-            name = ".".join(name)
-            name = name + " "*(6-len(name))
-            mt.Track('train', name, w.grad.norm().item())
+        # for name, w in model.named_parameters():
+        #   if 'weight' in name:
+        #     name = name.split('.')[1:][-3:-1]
+        #     name = ".".join(name)
+        #     name = name + " "*(6-len(name))
+        #     mt.Track('train', name, w.grad.norm().item())
         mt.Log('train')
 
       if loss.item() > 1000 or torch.isnan(loss):
@@ -642,6 +679,10 @@ def RunOne(h, model, data, mt, dev='cuda'):
     loss_fn = vmf_simp_loss_neg_sample
   if h['loss_fn'] == 'vmf_simplified_neg_sample_reg1':
     loss_fn = vmf_simp_loss_neg_sample_reg1
+  if h['loss_fn'] == 'cos':
+    loss_fn = cos_loss
+  if h['loss_fn'] == 'exp_cos':
+    loss_fn = exp_cos_loss
 
   success, step = Train(train_loader,
         model, loss_fn, optimizer, h, mt)

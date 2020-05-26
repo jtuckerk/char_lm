@@ -17,27 +17,29 @@ hyperparameters:
   seg1.kernel_size:
     - 18
   seg2.kernel|filter_sizes:
-    -
-      - [1,2048]
-      - [1,2048]  
-      - [1,2048]  
-      - [1,2048]  
+    - 
+      - [1,256]
+      - [1,1024]  
+      - [1,1024]  
+      - [1,12288]
   token_embedding_size:
     - 768
   batch_size:
-    - 256
+    - 512
   learning_rate:
-    - .00001
-  loss_fn:
-    - 'vmf_simplified_neg_sample_reg1'
+    - .000133
   dot_loss_weight:
-    - .00
+    - 0
+  mse_loss_weight:
+    - 100
+  loss_fn:
+    - 'cos'
   eval_acc:
     - True
   optimizer:
     - 'adam'
   epochs:
-    - 100
+    - 50
   space_freq:
     - .5
   lr_step_size:
@@ -49,9 +51,9 @@ hyperparameters:
   run_validation:
      - True
   random_seed:
-    - 8
+    - 10
   model_size_range_bytes:
-    - [0, 1.1e+8]
+    - [0, 1.5e+8]
   end_of_word_loss_weight:
     - 0.0
   add_random_count:
@@ -60,3 +62,5 @@ hyperparameters:
     - 0
   misspelling_transforms:
     - 0
+  model_checkpoint:
+    - models/c6ce592a5

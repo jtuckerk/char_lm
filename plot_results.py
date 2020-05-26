@@ -83,6 +83,16 @@ def normalize(flats):
       if not k in f and k=='from_uid':
         f[k] = None
 
+def SumTotalEpochs(exp_info, exp_lookup):
+  epochs = exp_info.get('epochs', 0)
+  expbase = exp_info.get('model_checkpoint', "")
+  if not expbase:
+    return epochs
+  expbase = expbase.split("/")[-1]
+  if expbase and expbase in exp_lookup:
+    epochs += SumTotalEpochs(exp_lookup[expbase], exp_lookup)
+  return epochs
+    
 if __name__ == "__main__":
   experiment_dir = sys.argv[1]
 
@@ -103,6 +113,12 @@ if __name__ == "__main__":
   results = [r for r in results if not 'exit_info' in r]
   flats = [GetFlatInfoResults(x, hashes) for x in results]
 
+  exp_lookup = {f['hash']: f for f in flats}
+  for f in flats:
+    tot = SumTotalEpochs(f, exp_lookup)
+    f['total_epochs'] = tot
+
   normalize(flats)
+
   exp_vis = hip.Experiment.from_iterable(flats)
   html = exp_vis.to_html('/tmp/hiplot.html')
