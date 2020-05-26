@@ -650,6 +650,8 @@ class Net(nn.Module):
       self.token_encoded = False
       self.char_embedder = CharEmbedder(h)
       self.position_embeddings = self.bert.distilbert.embeddings.position_embeddings
+      self.LayerNorm = self.bert.distilbert.embeddings.LayerNorm
+      self.dropout = nn.Dropout(.1)
       
     self.softmax = torch.nn.Softmax(-1)
     self.skip_bert = h.get('skip_bert', False)
@@ -669,7 +671,10 @@ class Net(nn.Module):
           seq_length = embedded_chars.size(1)
           position_ids = torch.arange(seq_length, dtype=torch.long, device=embedded_chars.device)  # (max_seq_length)
           position_ids = position_ids.unsqueeze(0).expand(embedded_chars.size()[:2])  # (bs, max_seq_length)
-          embedded_chars += self.position_embeddings(position_ids)          
+          embedded_chars += self.position_embeddings(position_ids)
+
+        embedded_chars = self.LayerNorm(embedded_chars)
+        embedded_chars = self.dropout(embedded_chars)
         word_logits = self.bert(inputs_embeds=embedded_chars)[0]
 
     if self.output_type == 'only_masked':
