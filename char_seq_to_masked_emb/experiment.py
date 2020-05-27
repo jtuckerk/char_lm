@@ -756,6 +756,9 @@ def RunOne(h, model, data, mt, dev='cuda'):
   if 'vocab_transform' in h['freeze_modules']:
     for param in model.bert.vocab_transform.parameters():
       param.requires_grad = False
+  if 'vocab_layer_norm' in h['freeze_modules']:
+    for param in model.bert.vocab_layer_norm.parameters():
+      param.requires_grad = False
 
   if 'vocab_projector' in h['freeze_modules']:
     for param in model.bert.vocab_projector.parameters():

@@ -19,10 +19,10 @@ hyperparameters:
     - 18
   seg2.kernel|filter_sizes:
     -
-      - [1,2048]
-      - [1,2048]
-      - [1,2048]
-      - [1,2048]
+      - [1,256]
+      - [1,1024]  
+      - [1,1024]  
+      - [1,12288]
   token_embedding_size:
     - 768
   switchboard_type:
@@ -33,7 +33,7 @@ hyperparameters:
   batch_size:
     - 64
   learning_rate:
-    - .0001
+    - .00012
   loss_fn:
     - 'xentropy'
   optimizer:
@@ -57,10 +57,14 @@ hyperparameters:
   space_loss_weight:
     - 0
   freeze_modules:
-    - [bert.transformer.layer.1,
+    - [bert.embeddings,
+       bert.transformer.layer.0,
+       bert.transformer.layer.1,
        bert.transformer.layer.2,
        bert.transformer.layer.3,
        bert.transformer.layer.4,
-       bert.transformer.layer.5]
+       bert.transformer.layer.5,
+       vocab_layer_norm,
+       vocab_transform, vocab_projector]
   model_checkpoint:
-    - models/d3aa9f852
+    - models/epc6ce592a5
