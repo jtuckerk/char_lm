@@ -2,12 +2,12 @@
 
 #### Note: Ongoing work. The experiments in this repo are designed to be run with my experiment framework [here](https://github.com/jtuckerk/experiment_framework).
 
-### principle goal of the experiments in this repo:
+### Principle goal of the experiments in this repo:
 
 Train models to predict token embeddings from character encoded text.<br>
 If we can **find meaningful chunks of characters** (words or tokens) 
 and if from those characters we can **predict embeddings** for a pretrained language model, 
-then we should be able to use those embeddings in the same ways they are used in any language task.
+then we should be able to use those embeddings in the same ways they are used in any language task. My hope is that this will be possible on "Free-Tier" quantities of compute.
 
 This work is motivated by many papers which find small amounts of success using large amounts of compute when trying to get character level language models to work well on anything other than next character prediction. I hope to leverage token-based pretrained models to reach state-of-the-art performance using characters as input. From there I hope to exceed token-level performance, by extending the effective vocabulary size, making models more robust to misspellings and uncommon words & names, and lastly increase performance of models for languages in which tokenization is much more difficult than in English.
 
