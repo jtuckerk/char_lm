@@ -54,14 +54,21 @@ hyperparameters:
     - bert_distil_uncased
   manual_attention:
     - True
-    - False
   position_embeddings:
     - False
   skip_bert:
     - True
   space_loss_weight:
     - 0
-  freeze_modules:  
-    - ['bert, 'embedding_predict']
+  freeze_modules:
+    - [bert.embeddings,
+       bert.transformer.layer.0,
+       bert.transformer.layer.1,
+       bert.transformer.layer.2,
+       bert.transformer.layer.3,
+       bert.transformer.layer.4,
+       bert.transformer.layer.5,
+       vocab_layer_norm,
+       vocab_transform, vocab_projector]
   model_checkpoint:
-    - models/2638f742c+b8d7b7834
+    - models/epc6ce592a5

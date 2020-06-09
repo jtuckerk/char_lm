@@ -128,7 +128,8 @@ def Train(train_loader, model, loss_fn, optimizer, h, mt):
       if loss.item() > 1000 or torch.isnan(loss):
         bad_loss = True
         logging.info("Loss diverging. quitting. %s" % loss.item())
-        break        
+        break
+
       running_loss = running_count = 0.0
       last_lr = optimizer.param_groups[0]['lr']
   
@@ -180,11 +181,12 @@ class ClozeDataset(torch.utils.data.Dataset):
 class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
   # expects torch file to be a single token sequence of a preprocessed text dataset.
   def __init__(self, torch_file, token_seq_length, vocab_file,
-               char_to_idx_file, word_length, percent_masks=.1, add_random_count=0, space_freq=1, device='cuda'):
+               char_to_idx_file, word_length, percent_masks=.1, add_random_count=0, space_freq=1, add_next_words=0, device='cuda'):
     self.mask_idx = 103
     
     self.percent_masks = percent_masks
     self.add_random_count = add_random_count
+    self.add_next_words = add_next_words
     self.space_freq = space_freq
     self.data = torch.load(torch_file, map_location=device)
     self.data = self.data.to(device)
@@ -206,11 +208,13 @@ class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
     
   def _preprocess_chars(self, vocab_file, char_to_idx_file, word_length):
     bert_vocab = []
+    self.suffix_words = set()
     with open(vocab_file) as f:
-      for l in f.readlines():
+      for i, l in enumerate(f.readlines()):
         word = l.strip()
         if word.startswith("##"):
           word = word.replace("##", "")
+          self.suffix_words.add(i)
         bert_vocab.append(word)
 
     longest_word_in_bert_vocab = max([len(w) for w in bert_vocab])
@@ -232,10 +236,10 @@ class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
   def __getitem__(self, idx):
     i = self.data[idx].long()
     masked = i.clone()
-    mask = torch.rand(size=masked.size())
-    mask = torch.where(mask<self.percent_masks)
+    rand = torch.rand(size=masked.size())
+    mask = torch.where(rand<self.percent_masks)
     masked[mask] = self.mask_idx
-
+    print(mask)
     item = {
       'label_ids': i,
       'token_ids': masked
@@ -248,6 +252,10 @@ class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
         char_encoded_input =self.add_random_next_word(char_encoded_input, end)
         end = self.end_of_word(char_encoded_input)
 
+    for i in range(self.add_next_words):
+      char_encoded_input = self.add_actual_next_word(char_encoded_input, end, masked, i)
+      end = self.end_of_word(char_encoded_input)
+      
     item['input_ids'] = char_encoded_input
 
     return item
@@ -255,9 +263,14 @@ class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
     chars = char_encoded_input!=0
     return chars.sum(-1)
 
+  def IsSuffix(self, word_idx):
+    if word_idx==0:
+      return False
+    return word_idx.item() in self.suffix_words
+    
   def append_single(self, char_encoded_input, add_word, end):
     c_len = len(char_encoded_input)
-    if torch.rand(size=())>=self.space_freq:
+    if torch.rand(size=())>=self.space_freq and self.IsSuffix(add_word):
       end = torch.clamp(end, max=c_len-1)
       char_encoded_input[end:] = self.word_char_encoding[add_word][:c_len-end]
     else:
@@ -281,6 +294,24 @@ class ClozeDatasetWithCharInp(torch.utils.data.Dataset):
 
     return char_encoded_input
 
+  def add_actual_next_word(self, char_encoded_input, end, word_idxs, count):
+    # returns the word with a random word added at the end of the word
+    char_encoded_input = char_encoded_input.clone()
+    new_words=[]
+
+    for i, single_encoded in enumerate(char_encoded_input):
+      pos = i+count+1
+
+      if pos >= len(word_idxs):
+        next_word = 0 # TODO fragile
+      else:
+        next_word = word_idxs[pos]
+        
+      new_words.append(self.append_single(single_encoded, next_word, end[i]))
+    char_encoded_input = torch.stack(new_words)
+
+    return char_encoded_input
+  
 
 class LambdaLayer(nn.Module):
   def __init__(self, lambd):
@@ -306,7 +337,8 @@ def hard_sigmoid(x):
 
 def hard_leaky_grad_sigmoid(x):
     return HardLeakyGradSigmoid.apply(x)
-  
+
+
 class LSTMSwitchboard(nn.Module):
   def __init__(self, out_size, layers, sigmoid_out=False):
     super(LSTMSwitchboard,  self).__init__()
@@ -327,7 +359,7 @@ class LSTMSwitchboard(nn.Module):
     elif self.sigmoid_out == 'hard_leaky':
       out = hard_leaky_grad_sigmoid(out)
     return out.permute(0,2,1)
-
+  
 
 class GRUSwitchboard(nn.Module):
   def __init__(self, out_size, layers, sigmoid_out=False):
@@ -671,6 +703,7 @@ def InitDataset(exp_info, dev='cuda'):
                                  exp_info['percent_masks'],
                                  exp_info['add_random_count'],
                                  exp_info['space_frequency'],
+                                 exp_info['add_next_words'],
                                  device='cpu')
 
   tr, va = exp_info['dataset_split'] # the rest is test
@@ -684,7 +717,7 @@ def InitDataset(exp_info, dev='cuda'):
   return train_d, val_d, test_d
 
 def CreateModel(h):
-  if 'seg2.kernel|filter_sizes' not in h:
+  if 'char' in h['input_type'] and 'seg2.kernel|filter_sizes' not in h:
     # find the emb_pred model shape from the emb_pred exp
     exphash = h['model_checkpoint'].split('/')[-1]
     fname = 'emb_pred_results/' + exphash
@@ -766,7 +799,7 @@ def RunOne(h, model, data, mt, dev='cuda'):
     loss_fn = xentropy_loss_fn
 
   success, step = Train(train_loader,
-        model, loss_fn, optimizer, h, mt)
+                        model, loss_fn, optimizer, h, mt)
 
   if success and h['run_validation']:
     Validate(validation_loader, model, step, h, mt, 'val')

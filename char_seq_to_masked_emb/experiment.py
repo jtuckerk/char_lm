@@ -174,6 +174,7 @@ class CharClozeToTokEmbDataset(torch.utils.data.Dataset):
     self.char_mask = torch.tensor([32,56,33]).char()    
     self.beg = torch.tensor([0]).short()
     self.end = torch.tensor([len(self.data['chars_encoded'][0])]).short()
+    
   def __len__(self):
     return len(self.data['token_ids'])
 
@@ -187,6 +188,7 @@ class CharClozeToTokEmbDataset(torch.utils.data.Dataset):
     num_toks = (tokens!=0).sum()
 
     masked_chars, token_indices = self._mask_characters(original, offsets, num_toks)
+    token_vals = tokens[token_indices]
 
     if self.dense:
       # include [cls] token in the output
@@ -196,15 +198,15 @@ class CharClozeToTokEmbDataset(torch.utils.data.Dataset):
     item = {
       'input_ids': masked_chars.long(),
       'label_ids': tokens.long(),
-      'mask_idxs': token_indices
+      'mask_idxs': token_indices,
+      'masked_tokens': token_vals
       }
     return item
 
   def _mask_characters(self, original, offsets, num_toks):
-    rand_toks = torch.randperm(num_toks)[:self.num_masks]
+    rand_toks = torch.sort(torch.randperm(num_toks)[:self.num_masks])[0]
     offsets = offsets[rand_toks]
-    sorted_offsets = torch.sort(offsets, 0)[0]
-    segments_to_keep = torch.cat([self.beg, sorted_offsets.view(-1), self.end], 0).view(-1,2)
+    segments_to_keep = torch.cat([self.beg, offsets.view(-1), self.end], 0).view(-1,2)
 
     slices = []
 
@@ -231,7 +233,7 @@ class ClozeDataset(torch.utils.data.Dataset):
     self.token_seq_length = token_seq_length
     self.data = torch.load(torch_file, map_location=device)
     sequences = len(self.data)//token_seq_length
-    self.data = self.data[:sequences*token_seq_length].reshape(sequences,-1)
+    self.data = self.data['token_ids']
     self.device=device
 
   def __len__(self):
@@ -382,6 +384,8 @@ class LSTMSwitchboard(nn.Module):
       out = self.sigmoid(out)
     elif self.sigmoid_out == 'hard':
       out = hard_sigmoid(out)
+    elif self.sigmoid_out == 'step_with_sigmoid_grad':
+      out = step_with_sigmoid_grad(out)      
     elif self.sigmoid_out == 'hard_leaky':
       out = hard_leaky_grad_sigmoid(out)
     return out.permute(0,2,1)
@@ -443,6 +447,9 @@ class SwitchboardAttention(nn.Module):
       flatten = hard_sigmoid(x)
     elif self.sigmoid == 'hard_leaky':
       flatten = hard_leaky_grad_sigmoid(x)
+    elif self.sigmoid == 'step_with_sigmoid_grad':
+      flatten = step_with_sigmoid_grad(x)      
+      
     self.switch_input = flatten
     states_list = []
     for i in flatten.T:
@@ -793,7 +800,7 @@ def RunOne(h, model, data, mt, dev='cuda'):
     loss_fn = xentropy_loss_fn
 
   success, step = Train(train_loader,
-        model, loss_fn, optimizer, h, mt)
+                        model, loss_fn, optimizer, h, mt)
 
   if success and h['run_validation']:
     Validate(validation_loader, model, step, h, mt, 'val')

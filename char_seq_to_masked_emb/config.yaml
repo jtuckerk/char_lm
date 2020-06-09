@@ -1,11 +1,12 @@
 experiment_name: testing_bert_charcloze_to_dense_tok
 dataset: 'imdb_tok96_char_encoded384charidx2.pt'
-dataset_split: [.3, .06]
+dataset_split: [.3, .1]
 input_type: char_masked
 output_type: only_masked
 token_seq_length: 96
-num_masks: 6
+num_masks: 1
 hyperparameters:
+  num_masks: 1  
   input_type: char_masked
   output_type: only_masked
   token_seq_length: 96
@@ -13,6 +14,12 @@ hyperparameters:
   char_embedding_size: [8]
   conv_activation:
     - 'relu'
+  attn_conv.kernel|filter_sizes:
+    - 
+      - [6, 256]
+      - [5, 128]
+      - [4, 128]
+      - [1, 1  ]
   seg1_type:
     - 'unfold'
   seg1.kernel_size:
@@ -28,12 +35,12 @@ hyperparameters:
   switchboard_type:
     - rule_based
   sb.sigmoid:
-    - hard
-  num_masks: 6
+    - standard
+  mask_chars: False
   batch_size:
-    - 64
+    - 32
   learning_rate:
-    - .00012
+    - .00001
   loss_fn:
     - 'xentropy'
   optimizer:
@@ -57,14 +64,15 @@ hyperparameters:
   space_loss_weight:
     - 0
   freeze_modules:
-    - [bert.embeddings,
+    - [
        bert.transformer.layer.0,
        bert.transformer.layer.1,
        bert.transformer.layer.2,
        bert.transformer.layer.3,
        bert.transformer.layer.4,
        bert.transformer.layer.5,
+       bert.embeddings,
        vocab_layer_norm,
        vocab_transform, vocab_projector]
   model_checkpoint:
-    - models/epc6ce592a5
+    - models/70757d8a7+b8d7b7834
