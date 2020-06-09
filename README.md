@@ -1,5 +1,7 @@
 # Character level Language modelling
 
+#### Note: Ongoing work. The experiments in this repo are designed to be run with my experiment framework [here](https://github.com/jtuckerk/experiment_framework).
+
 ### principle goal of the experiments in this repo:
 
 Train models to predict token embeddings from character encoded text.<br>
