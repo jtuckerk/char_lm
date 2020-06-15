@@ -42,18 +42,25 @@ Predicting a word's embedding from characters is fairly straightforward, but thi
   <img src="images/char_lm_emb_pred_single.png">
 </p>
 
-## Putting it all together: so far so meh.
+## Putting it all together: Steady progress
 <p align="center">
   <img src="images/char_lm_full_labeled.png">
 </p>
 
-### problems with the word start prediction & switchboard attention for word block selection:
+### Challenges posed by long sequences
 <p align="center">
   <img src="images/leaky_switchboard.png">
 </p>
+The above shows the switchboard responsible for selecting which sequences of characters to pass to the embedding predictor module (3). As you can see the values start out close to 1 but slowly fade. This results in the character embeddings for multiple sequences of characters being combined via a weighted average. Given that the embedding prediction module (3) isn't trained to expect this sort of overlap this ends up leading to catastrophic failure of the model.
 
-There are 2 main problems with the performance of this model. Without any hand tuning of the word start attention activation function, values significantly different than 0 or 1 may be passed to the switchboard. This 'uncertainty' in the attention causes the switchboard to select multiple inputs for a single output and weigh them according to the attention values. This breaks the predictions at the point of the uncertainty and all future predictions.  As can be seen in the image above the attention starts of sharp, but leaks and becomes softer and spread out. 
-Similarly, In the case where we have a target sequence of embeddings we want to predict, any additional or missed word start prediction causes a mismatch in the rest of the embeddings in the output and no useful signal can be obtained for the end of that sequence. I have set up experiments in which only the masked embeddings are to be predicted, but this, even for token-based inputs, leads to a reduction in performance. Summing the reductions in performance at each step in this process ends up yielding models that do not achieve the desired goal.
+To overcome this I've used a step activation function to ensure that any character sequence passed through the switchboard is unperturbed. To make this differentiable I've used a sigmoid gradient. This seems to work fairly well.
+<p align="center">
+  <img src="images/step_sigmoid_grad.png">
+</p>
 
-### Can such a model be trained end-to-end from scratch? AKA does the pretraining inductive bias of the submodules 1,2,3 and Bert hurt, not help?
-I have not invested in the resources to test this conclusively, but from what I have seen it is not likely. I believe the switchboard imposes too tight of a bottleneck to let the word level information flow to the character->embedding prediction portion of the model. Digging in to figure out what sort of architectural or training changes would enable something with roughly this same set up is one direction I would like to take this work.
+One issue that arises with this set up is that module 1 does not have perfect accuracy. This can lead to cascading failures that can prevent the model from training given a standard MLM setup in which the expected output is distributions over each token in the sequence, including masked tokens. For example, if the first word is missed by module 1 the rest of the sequence will be offset by 1 and very little useful information will be gained from that step of training. To counter this I've changed the MLM task to predict token distribution of masked characters/tokens only. 
+
+After retraining the distilbert model for 1 epoch to perform the mask-only MLM task, I'm seeing around 50% accuracy. Replacing the embedding lookup for the input and training for a few more epochs yields about 47% accuracy. It's still unclear what the best procedure is for training multiple pretrained components together. On the one hand, keeping the bert model frozen seems advisable since so much pretraining has gone into it. On the other hand, it has more expressive power than modules 1,2, and 3 and can likely help overcome any deficiencies they may have. Empirically, leaving Bert frozen for an epoch, and then unfreezing the whole model seems to perform best. But I have yet to do a full hyperparameter search to over multiple seeds to confirm this.
+
+### Can such a model be trained end-to-end from scratch? Does the pretraining inductive bias of the submodules 1,2,3 and Bert hurt, not help?
+I have not invested in the resources to test this conclusively, but from what I have seen it is not likely to outperform a model with pretrained subcomponents. I believe the switchboard imposes too tight of a bottleneck to let the word level information flow to the character->embedding prediction portion of the model. Digging in to figure out what sort of architectural or training changes would enable something with roughly this same set up is one direction I would like to take this work.
