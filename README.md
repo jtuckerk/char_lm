@@ -4,7 +4,7 @@
 
 ### Principle goal of the experiments in this repo:
 
-####Train models to predict token embeddings from character encoded text.<br>
+#### Train models to predict token embeddings from character encoded text.<br>
 If we can **find meaningful chunks of characters** (words or tokens) 
 and if from those characters we can **predict embeddings** for a pretrained language model, 
 then we should be able to use those embeddings in the same ways they are used in any language task. My hope is that training such a model will be possible on "Free-Tier" quantities of compute. 
