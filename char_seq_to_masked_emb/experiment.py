@@ -340,7 +340,7 @@ class StepWithSigmoidGrad(torch.autograd.Function):
     @staticmethod
     def backward(self,grad_output):
         sig = torch.nn.Sigmoid()(self.x)
-        return sig*(1-sig)
+        return sig*(1-sig)*grad_output
 
 class StepWithHardGrad(torch.autograd.Function):
     @staticmethod
@@ -353,7 +353,7 @@ class StepWithHardGrad(torch.autograd.Function):
         grad_input = grad_output.clone()
         grad_input[self.high] = 1
         grad_input[~self.high] = 0
-        return grad_input
+        return grad_input*grad_output
 
 def hard_sigmoid(x):
   return x.clamp(min=0.0, max=1.0)
@@ -612,7 +612,7 @@ class CharEmbedder(nn.Module):
 
       # TODO clean and include other special chars.
       act[spaces[0], torch.clamp(spaces[1]+1, max=act.shape[-1]-1)] = 1
-      special_chars = torch.where((x<32) & (x!=1))
+      special_chars = torch.where((x<=32) & (x!=1))
       act[special_chars] = 1
       act[torch.where(act==0)]=-1
       act[:, 0] = 1

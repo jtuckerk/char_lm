@@ -116,8 +116,18 @@ class TokenStartDataset(torch.utils.data.Dataset):
   """
   def __init__(self, data_file, device='cuda'):
     self.data = torch.load(data_file)
-    self.data['char_encoded_seqs'] = self.data['chars_encoded'].to(device).long()
-    self.data['token_start_positions'] = self.data['token_start_offsets'].to(device).float()
+    self.data['char_encoded_seqs'] = self.data['chars_encoded'].to(device)
+    # if the dataset has start and end indexes - convert to idx 1-marked.
+    if len(self.data['token_start_offsets'].shape) == 3:
+      starts = self.data['token_start_offsets'][:, :, 0]
+      seq_enc_starts = torch.zeros(self.data['char_encoded_seqs'].shape).to(starts.device)
+      seq_enc_starts[torch.arange(self.data['char_encoded_seqs'].shape[0]).view(-1,1), starts.long()] = 1
+      self.data['token_start_positions'] = seq_enc_starts.to(device)
+      print("2part offset")
+    else:
+      self.data['token_start_positions'] = self.data['token_start_offsets']
+      print("1hot encoding ish")
+      
     assert len(self.data['char_encoded_seqs']) == len(self.data['token_start_positions'])
     
   def __len__(self):
@@ -125,8 +135,8 @@ class TokenStartDataset(torch.utils.data.Dataset):
 
   def __getitem__(self, idx):
     return {
-      'char_encoded_seqs': self.data['char_encoded_seqs'][idx],
-      'token_start_positions': self.data['token_start_positions'][idx]
+      'char_encoded_seqs': self.data['char_encoded_seqs'][idx].long(),
+      'token_start_positions': self.data['token_start_positions'][idx].float()
     }
 
 class LambdaLayer(nn.Module):
@@ -182,7 +192,7 @@ class TokStartAttn(nn.Module):
     self.emb = nn.Embedding(h['char_vocab_size'], h['char_embedding_size'])
 
     self.char_input_window_size = h['conv.kernel|filter_sizes'][0][0]
-    self.conv = ConvSegment(h['char_embedding_size'], h['conv_activation'], h['conv.kernel|filter_sizes'])
+    self.conv = ConvSegment(h['char_embedding_size'], h['conv_activation'], h['conv.kernel|filter_sizes'], True)
     conv_out_size = h['conv.kernel|filter_sizes'][-1][1]
 
     # no nonlinearity

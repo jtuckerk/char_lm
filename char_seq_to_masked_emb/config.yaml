@@ -1,12 +1,12 @@
 experiment_name: testing_bert_charcloze_to_dense_tok
 dataset: 'imdb_tok96_char_encoded384charidx2.pt'
-dataset_split: [.3, .1]
+dataset_split: [.5, .1]
 input_type: char_masked
 output_type: only_masked
 token_seq_length: 96
-num_masks: 1
+num_masks: 2
 hyperparameters:
-  num_masks: 1  
+  num_masks: 2
   input_type: char_masked
   output_type: only_masked
   token_seq_length: 96
@@ -35,11 +35,12 @@ hyperparameters:
   switchboard_type:
     - rule_based
   sb.sigmoid:
-    - standard
-  mask_chars: False
+    - step_with_sigmoid_grad
+  mask_chars: True
   batch_size:
-    - 32
+    - 64
   learning_rate:
+    - .0001
     - .00001
   loss_fn:
     - 'xentropy'
@@ -52,7 +53,7 @@ hyperparameters:
   run_validation:
      - True
   seed:
-    - 0
+    - 1
   bert_checkpoint:
     - bert_distil_dense_out
   skip_bert:
@@ -60,19 +61,13 @@ hyperparameters:
   position_embeddings:
     - True
   manual_attention:
-    - True
+    - False
   space_loss_weight:
     - 0
   freeze_modules:
-    - [
-       bert.transformer.layer.0,
-       bert.transformer.layer.1,
-       bert.transformer.layer.2,
-       bert.transformer.layer.3,
-       bert.transformer.layer.4,
-       bert.transformer.layer.5,
-       bert.embeddings,
-       vocab_layer_norm,
-       vocab_transform, vocab_projector]
+    - []
+    - [bert.transformer.layer.0, bert.transformer.layer.1, bert.transformer.layer.2,
+      bert.transformer.layer.3, bert.transformer.layer.4, bert.transformer.layer.5,
+      bert.embeddings, vocab_layer_norm, vocab_transform, vocab_projector]   
   model_checkpoint:
     - models/70757d8a7+b8d7b7834
